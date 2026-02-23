@@ -17,7 +17,7 @@ class MySlamEnvCfg(UnitreeGo2RoughEnvCfg):
         self.scene.terrain = TerrainImporterCfg(
             prim_path="/World/ground",
             terrain_type="usd",
-            usd_path="/home/cvr/Desktop/sj/isaac-project/assets/slam_env.usd",
+            usd_path="/home/cvr/Desktop/sj/go2_intelligence_framework/assets/slam_env.usd",
             physics_material=sim_utils.RigidBodyMaterialCfg(
                 friction_combine_mode="multiply",
                 restitution_combine_mode="multiply",

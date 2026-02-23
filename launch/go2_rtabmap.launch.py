@@ -1,11 +1,13 @@
 from launch import LaunchDescription
 from launch.actions import DeclareLaunchArgument
 from launch.substitutions import LaunchConfiguration
+from launch.conditions import IfCondition, UnlessCondition
 from launch_ros.actions import Node
 
 
 def generate_launch_description():
     use_sim_time = LaunchConfiguration("use_sim_time")
+    localization = LaunchConfiguration("localization")
 
     camera_remappings = [
         ("rgb/image", "/camera/color/image_raw"),
@@ -75,13 +77,17 @@ def generate_launch_description():
                 "Grid/NormalsSegmentation": "false",
                 "Rtabmap/MemoryThr": "0",
                 "Rtabmap/ImageBufferSize": "1",
+                # Localization 모드일 때 매핑 중지 (Read-only 모드)
+                "Mem/IncrementalMemory": "false" if localization == "true" else "true",
+                "Mem/InitWMWithAllNodes": "true" if localization == "true" else "false",
             }
         ],
         remappings=camera_remappings + [
             ("odom", "/odom"),
             ("imu", "/imu/data"),
         ],
-        arguments=["-d"],
+        # Mapping 모드일 때만 -d(삭제) 옵션 추가
+        arguments=["-d"] if localization == "false" else [],
     )
 
     return LaunchDescription(
@@ -90,6 +96,11 @@ def generate_launch_description():
                 "use_sim_time",
                 default_value="true",
                 description="Use simulation clock from /clock topic",
+            ),
+            DeclareLaunchArgument(
+                "localization",
+                default_value="false",
+                description="Launch in localization mode",
             ),
             base_to_camera_tf,
             camera_to_optical_tf,

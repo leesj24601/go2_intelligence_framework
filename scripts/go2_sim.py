@@ -1,9 +1,22 @@
 #!/usr/bin/env python3
-import argparse
 import sys
+
+# Isaac Sim 번들 rclpy(Python 3.11용)를 가장 먼저 등록.
+# source /opt/ros/humble/setup.bash 로 잡힌 시스템 Python 3.10 경로보다
+# 앞에 위치시켜야 모든 ROS2 패키지가 번들에서 로딩됨.
+_ISAAC_ROS2_PATH = (
+    "/home/cvr/anaconda3/envs/lab/lib/python3.11/site-packages"
+    "/isaacsim/exts/isaacsim.ros2.bridge/humble/rclpy"
+)
+sys.path = [p for p in sys.path if not p.startswith("/opt/ros/")]
+if _ISAAC_ROS2_PATH not in sys.path:
+    sys.path.insert(0, _ISAAC_ROS2_PATH)
+
+import argparse
 import os
 import time
 import logging
+import threading
 import numpy as np
 import torch
 import gymnasium as gym
@@ -85,6 +98,90 @@ class WasdKeyboard(Se2Keyboard):
             "E": np.asarray([0.0, 0.0, -1.0]) * self.omega_z_sensitivity,
             "K": np.asarray([0.0, 0.0, 0.0]),
         }
+
+
+class ArrowKeyboard(Se2Keyboard):
+    """방향키(↑↓←→) → /cmd_vel 테스트용. WASD와 키 충돌 없음."""
+    def _create_key_bindings(self):
+        self._INPUT_KEY_MAPPING = {
+            "UP":    np.asarray([1.0, 0.0, 0.0]) * self.v_x_sensitivity,
+            "DOWN":  np.asarray([-1.0, 0.0, 0.0]) * self.v_x_sensitivity,
+            "LEFT":  np.asarray([0.0, 0.0, 1.0]) * self.omega_z_sensitivity,
+            "RIGHT": np.asarray([0.0, 0.0, -1.0]) * self.omega_z_sensitivity,
+        }
+
+
+class CmdVelNode:
+    """Isaac Sim 내장 rclpy로 /cmd_vel 퍼블리시 + 구독.
+
+    - 방향키 입력 → publish() → /cmd_vel 퍼블리시 (테스트용, 나중에 Nav2로 교체)
+    - /cmd_vel 수신 → get_latest() → 로봇 vel_command_b에 주입
+    - 타임아웃(CMD_VEL_TIMEOUT 초) 동안 업데이트 없으면 자동 정지
+    """
+
+    CMD_VEL_TIMEOUT = 0.5  # 초
+
+    def __init__(self):
+        import rclpy
+        from rclpy.node import Node
+        from geometry_msgs.msg import Twist
+
+        if not rclpy.ok():
+            rclpy.init()
+
+        self._rclpy = rclpy
+        _lock = threading.Lock()
+        _latest = [None]       # (vx, vy, omega) or None
+        _last_recv_time = [0.0]
+
+        class _Node(Node):
+            def __init__(self):
+                super().__init__("go2_cmd_vel")
+                self._pub = self.create_publisher(Twist, "/cmd_vel", 10)
+                self.create_subscription(Twist, "/cmd_vel", self._cb, 10)
+
+            def _cb(self, msg):
+                with _lock:
+                    _latest[0] = (msg.linear.x, msg.linear.y, msg.angular.z)
+                    _last_recv_time[0] = time.time()
+
+            def publish(self, vx, vy, omega):
+                msg = Twist()
+                msg.linear.x = float(vx)
+                msg.linear.y = float(vy)
+                msg.angular.z = float(omega)
+                self._pub.publish(msg)
+
+        self._node = _Node()
+        self._lock = _lock
+        self._latest = _latest
+        self._last_recv_time = _last_recv_time
+
+        # spin_once 루프: 짧은 timeout으로 GIL을 자주 해제해 메인 루프 방해 최소화
+        def _spin_loop():
+            while rclpy.ok():
+                rclpy.spin_once(self._node, timeout_sec=0.01)
+
+        self._thread = threading.Thread(target=_spin_loop, daemon=True)
+        self._thread.start()
+        print("[INFO] /cmd_vel subscriber/publisher 시작 (방향키: ↑↓전후 ←→회전)")
+
+    def publish(self, vx: float, vy: float, omega: float):
+        self._node.publish(vx, vy, omega)
+
+    def get_latest(self):
+        """가장 최근 수신된 /cmd_vel 반환. 타임아웃 초과 시 None 반환 (정지)."""
+        with self._lock:
+            if self._latest[0] is None:
+                return None
+            if time.time() - self._last_recv_time[0] > self.CMD_VEL_TIMEOUT:
+                return None
+            return self._latest[0]
+
+    def shutdown(self):
+        self._node.destroy_node()
+        if self._rclpy.ok():
+            self._rclpy.shutdown()
 
 
 def setup_ros2_camera_graph(camera_prim_path: str):
@@ -275,16 +372,32 @@ def main(env_cfg, agent_cfg):
     env = gym.make(args_cli.task, cfg=custom_env_cfg)
     env = RslRlVecEnvWrapper(env)
 
-    # 4. Load Policy
-    task_name = args_cli.task.split(":")[-1]
-    train_task_name = task_name.replace("-Play", "")
-    resume_path = get_published_pretrained_checkpoint("rsl_rl", train_task_name)
+    # 4. Load Policy — Unitree RL Lab 최신 체크포인트 자동 탐색
+    import glob, re as _re
+    _log_dir = "/home/cvr/Desktop/sj/unitree_rl_lab/logs/rsl_rl/unitree_go2_velocity"
+    _sessions = sorted(glob.glob(os.path.join(_log_dir, "*")))
+    if not _sessions:
+        raise FileNotFoundError(f"체크포인트 세션 없음: {_log_dir}")
+    _latest_session = _sessions[-1]
+    _pts = sorted(
+        glob.glob(os.path.join(_latest_session, "model_*.pt")),
+        key=lambda p: int(_re.search(r"model_(\d+)\.pt", p).group(1)),
+    )
+    if not _pts:
+        raise FileNotFoundError(f"모델 파일 없음: {_latest_session}")
+    resume_path = _pts[-1]
 
     print(f"[INFO] Loading policy from: {resume_path}")
     runner = OnPolicyRunner(
         env, agent_cfg.to_dict(), log_dir=None, device=agent_cfg.device
     )
-    runner.load(resume_path)
+    # Unitree RL Lab은 actor(45-dim) / critic(60-dim) obs가 분리되어 학습됨.
+    # 추론 시 critic 불필요 → critic 키를 제외한 actor 가중치만 로드.
+    import torch as _torch
+    _ckpt = _torch.load(resume_path, weights_only=False)
+    _actor_state = {k: v for k, v in _ckpt["model_state_dict"].items() if not k.startswith("critic")}
+    runner.alg.policy.load_state_dict(_actor_state, strict=False)
+    print(f"[INFO] Policy (actor) weights loaded, critic skipped")
     policy = runner.get_inference_policy(device=env.unwrapped.device)
 
     # 5. ROS2 OmniGraph 카메라 퍼블리셔 설정 (SIMULATION 파이프라인 - 자동 실행)
@@ -315,6 +428,11 @@ def main(env_cfg, agent_cfg):
             v_x_sensitivity=1.0, v_y_sensitivity=1.0, omega_z_sensitivity=1.5
         )
     )
+    arrow_keyboard = ArrowKeyboard(
+        Se2KeyboardCfg(v_x_sensitivity=1.0, omega_z_sensitivity=1.5)
+    )
+    cmd_vel_node = CmdVelNode()
+    _last_log_time = 0.0
 
     # 명령 manager 미리 캐싱
     cmd_term = None
@@ -327,13 +445,30 @@ def main(env_cfg, agent_cfg):
 
     while simulation_app.is_running():
         start_time = time.time()
-        vel_cmd = keyboard.advance()
+        vel_cmd = keyboard.advance()  # WASD: 로봇 직접 제어 (기존 그대로)
 
-        # 명령어 적용
+        # [테스트] 방향키 → /cmd_vel 퍼블리시 (WASD와 키 충돌 없음)
+        arrow_vel = arrow_keyboard.advance()
+        if any(float(v) != 0.0 for v in arrow_vel):
+            cmd_vel_node.publish(float(arrow_vel[0]), float(arrow_vel[1]), float(arrow_vel[2]))
+
+        # /cmd_vel 수신값 우선 적용, 없으면 WASD 폴백
+        received = cmd_vel_node.get_latest()
+        now = time.time()
         if cmd_term is not None:
-            cmd_term.vel_command_b[0, 0] = vel_cmd[0]
-            cmd_term.vel_command_b[0, 1] = vel_cmd[1]
-            cmd_term.vel_command_b[0, 2] = vel_cmd[2]
+            if received is not None:
+                # Nav2 (또는 방향키 테스트) cmd_vel → 로봇 직접 제어
+                cmd_term.vel_command_b[0, 0] = received[0]
+                cmd_term.vel_command_b[0, 1] = received[1]
+                cmd_term.vel_command_b[0, 2] = received[2]
+                if now - _last_log_time > 1.0:
+                    print(f"[CMD_VEL] vx={received[0]:.2f}  vy={received[1]:.2f}  omega={received[2]:.2f}")
+                    _last_log_time = now
+            else:
+                # cmd_vel 없음 (타임아웃 포함) → WASD 폴백
+                cmd_term.vel_command_b[0, 0] = vel_cmd[0]
+                cmd_term.vel_command_b[0, 1] = vel_cmd[1]
+                cmd_term.vel_command_b[0, 2] = vel_cmd[2]
 
         # IMU 데이터 사전 주입 (env.step 내 SIMULATION pipeline에서 퍼블리시됨)
         try:
@@ -364,6 +499,7 @@ def main(env_cfg, agent_cfg):
             if sleep_time > 0:
                 time.sleep(sleep_time)
 
+    cmd_vel_node.shutdown()
     env.close()
 
 

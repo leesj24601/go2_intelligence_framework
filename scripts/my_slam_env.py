@@ -3,6 +3,9 @@ from isaaclab.utils import configclass
 from isaaclab.terrains import TerrainImporterCfg
 from isaaclab.sensors import CameraCfg, ImuCfg
 import isaaclab.sim as sim_utils
+from isaaclab.managers import ObservationTermCfg as ObsTerm
+from isaaclab.utils.noise import AdditiveUniformNoiseCfg as Unoise
+import isaaclab_tasks.manager_based.locomotion.velocity.mdp as mdp
 from isaaclab_tasks.manager_based.locomotion.velocity.config.go2.rough_env_cfg import (
     UnitreeGo2RoughEnvCfg,
 )
@@ -42,6 +45,19 @@ class MySlamEnvCfg(UnitreeGo2RoughEnvCfg):
         self.episode_length_s = 1.0e9
         if hasattr(self.curriculum, "terrain_levels"):
             self.curriculum.terrain_levels = None
+
+        # Unitree RL Lab 정책 obs space 맞추기 (45-dim)
+        # 제거: base_lin_vel(3), height_scan(~187)
+        # 유지: base_ang_vel(3×0.2), projected_gravity(3), velocity_commands(3),
+        #        joint_pos_rel(12), joint_vel_rel(12×0.05), last_action(12)
+        self.observations.policy.base_lin_vel = None
+        self.observations.policy.height_scan = None
+        self.observations.policy.base_ang_vel = ObsTerm(
+            func=mdp.base_ang_vel, scale=0.2, noise=Unoise(n_min=-0.2, n_max=0.2)
+        )
+        self.observations.policy.joint_vel = ObsTerm(
+            func=mdp.joint_vel_rel, scale=0.05, noise=Unoise(n_min=-1.5, n_max=1.5)
+        )
 
         # IMU 센서 (50Hz, body frame)
         self.scene.imu_sensor = ImuCfg(

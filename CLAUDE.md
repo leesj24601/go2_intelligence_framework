@@ -4,6 +4,7 @@ This file provides guidance to Claude Code (claude.ai/code) when working with co
 
 ## 외부 참조 규칙
 - 코드/API 참고 시 `/home/cvr/Desktop/sj/IsaacLab/` 폴더를 우선 탐색한다.
+- go2 모델 설정 참고 시 '/home/cvr/Desktop/sj/unitree_model/Go2/usd/' 폴더를 우선 탐색한다.
 - 추가 정보가 필요하면 공개된 웹 문서(API docs, GitHub 등)를 참고한다.
 - PC 내 다른 폴더 탐색이 필요한 경우 반드시 사용자에게 경로를 확인받는다.
 

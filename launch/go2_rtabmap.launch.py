@@ -41,6 +41,7 @@ def generate_launch_description():
 
     # 공통 파라미터
     _rtabmap_common_params = {
+        "database_path": "/home/cvr/Desktop/sj/go2_intelligence_framework/maps/rtabmap.db",
         "frame_id": "camera_link",
         "map_frame_id": "map",
         "odom_frame_id": "odom",
@@ -111,7 +112,7 @@ def generate_launch_description():
             "Rtabmap/DetectionRate": "2.0",         # 0.5 → 2.0Hz (빠른 재탐지)
             "RGBD/LinearUpdate": "0.0",             # 정지 중에도 처리
             "RGBD/AngularUpdate": "0.0",            # 정지 중에도 처리
-            "Rtabmap/LoopThr": "0.01",              # 임계값 대폭 완화 (기본 0.11 → 0.01)
+            "Rtabmap/LoopThr": "0.11",              # 정상 임계값으로 복구 (0.11 = 11%)
             "Kp/MaxFeatures": "1000",               # 특징점 수 2배 (500 → 1000)
         }],
         remappings=_rtabmap_remappings,

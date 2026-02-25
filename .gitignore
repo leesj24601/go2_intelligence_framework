@@ -4,3 +4,7 @@ __pycache__/
 
 # 시뮬레이션 결과물 폴더 무시
 outputs/
+
+# rtabmap database
+maps/maps/rtabmap.db
+maps/rtabmap.db

@@ -84,6 +84,14 @@ from isaacsim.core.utils import extensions
 
 # ROS2 bridge 확장 활성화
 extensions.enable_extension("isaacsim.ros2.bridge")
+
+# MCP 익스텐션 경로 등록 및 활성화
+import omni.kit.app
+omni.kit.app.get_app().get_extension_manager().add_path(
+    "/home/cvr/omni-mcp/isaac-sim-mcp"
+)
+extensions.enable_extension("isaac.sim.mcp_extension")
+
 simulation_app.update()
 
 

@@ -39,55 +39,83 @@ def generate_launch_description():
         ],
     )
 
-    rtabmap_node = Node(
+    # 공통 파라미터
+    _rtabmap_common_params = {
+        "frame_id": "camera_link",
+        "map_frame_id": "map",
+        "odom_frame_id": "odom",
+        "subscribe_depth": True,
+        "subscribe_odom_info": False,
+        "approx_sync": True,
+        "approx_sync_max_interval": 0.5,
+        "publish_tf": True,
+        "tf_delay": 0.05,
+        "wait_for_transform": 0.5,
+        "qos": 1,
+        "queue_size": 5,
+        "use_sim_time": use_sim_time,
+        "subscribe_imu": True,
+        "Rtabmap/DetectionRate": "0.5",
+        "Rtabmap/LoopClosureReextractFeatures": "true",
+        "Reg/Strategy": "0",            # Visual 기반
+        "Vis/EstimationType": "2",      # 3D-3D: depth로 양쪽 3D 좌표 추출 후 매칭
+                                        # 시뮬(완벽한 depth) + 실 로봇(RealSense) 모두 안정적
+        "Vis/MinInliers": "15",         # 기본값 20 → 15 (시뮬 텍스처 빈약 보완)
+        "RGBD/OptimizeMaxError": "3.0",
+        "RGBD/ProximityPathMaxNeighbors": "10",
+        "RGBD/AngularUpdate": "0.1",
+        "RGBD/LinearUpdate": "0.1",
+        "Reg/Force3DoF": "false",
+        "Grid/FromDepth": "true",
+        "Grid/RangeMax": "5.0",
+        "Grid/CellSize": "0.05",
+        "Grid/MaxGroundHeight": "0.05",
+        "Grid/MaxObstacleHeight": "2.0",
+        "Grid/NormalsSegmentation": "false",
+        "Rtabmap/MemoryThr": "0",
+        "Rtabmap/ImageBufferSize": "1",
+    }
+
+    _rtabmap_remappings = camera_remappings + [
+        ("odom", "/odom"),
+        ("imu", "/imu/data"),
+    ]
+
+    # SLAM 모드: 맵 생성 (localization=false, 기본값)
+    # -d 플래그로 기존 DB 초기화 후 새 맵 생성
+    rtabmap_slam_node = Node(
         package="rtabmap_slam",
         executable="rtabmap",
         output="screen",
-        parameters=[
-            {
-                "frame_id": "camera_link",
-                "map_frame_id": "map",
-                "odom_frame_id": "odom",
-                "subscribe_depth": True,
-                "subscribe_odom_info": False,
-                "approx_sync": True,
-                "approx_sync_max_interval": 0.5,
-                "publish_tf": True,
-                "tf_delay": 0.05,
-                "wait_for_transform": 0.5,
-                "qos": 1,
-                "queue_size": 5,
-                "use_sim_time": use_sim_time,
-                # IMU 구독
-                "subscribe_imu": True,
-                # RTAB-Map 파라미터
-                "Rtabmap/DetectionRate": "0.5",
-                "Rtabmap/LoopClosureReextractFeatures": "true",
-                "Reg/Strategy": "0",
-                "RGBD/OptimizeMaxError": "3.0",
-                "RGBD/ProximityPathMaxNeighbors": "10",
-                "RGBD/AngularUpdate": "0.1",
-                "RGBD/LinearUpdate": "0.1",
-                "Reg/Force3DoF": "false",
-                "Grid/FromDepth": "true",
-                "Grid/RangeMax": "5.0",
-                "Grid/CellSize": "0.05",
-                "Grid/MaxGroundHeight": "0.05",
-                "Grid/MaxObstacleHeight": "2.0",
-                "Grid/NormalsSegmentation": "false",
-                "Rtabmap/MemoryThr": "0",
-                "Rtabmap/ImageBufferSize": "1",
-                # Localization 모드일 때 매핑 중지 (Read-only 모드)
-                "Mem/IncrementalMemory": "false" if localization == "true" else "true",
-                "Mem/InitWMWithAllNodes": "true" if localization == "true" else "false",
-            }
-        ],
-        remappings=camera_remappings + [
-            ("odom", "/odom"),
-            ("imu", "/imu/data"),
-        ],
-        # Mapping 모드일 때만 -d(삭제) 옵션 추가
-        arguments=["-d"] if localization == "false" else [],
+        condition=UnlessCondition(localization),
+        parameters=[{
+            **_rtabmap_common_params,
+            "Mem/IncrementalMemory": "true",
+            "Mem/InitWMWithAllNodes": "false",
+        }],
+        remappings=_rtabmap_remappings,
+        arguments=["-d"],  # 기존 DB 삭제 후 새로 시작
+    )
+
+    # Localization 모드: 저장된 맵 불러와 위치 추정만 (localization=true)
+    # DB를 read-only로 열어 맵 발행 + map→odom TF 발행
+    rtabmap_localization_node = Node(
+        package="rtabmap_slam",
+        executable="rtabmap",
+        output="screen",
+        condition=IfCondition(localization),
+        parameters=[{
+            **_rtabmap_common_params,
+            "Mem/IncrementalMemory": "false",      # 새 노드 추가 안 함
+            "Mem/InitWMWithAllNodes": "true",       # DB 전체 로드
+            "Rtabmap/DetectionRate": "2.0",         # 0.5 → 2.0Hz (빠른 재탐지)
+            "RGBD/LinearUpdate": "0.0",             # 정지 중에도 처리
+            "RGBD/AngularUpdate": "0.0",            # 정지 중에도 처리
+            "Rtabmap/LoopThr": "0.01",              # 임계값 대폭 완화 (기본 0.11 → 0.01)
+            "Kp/MaxFeatures": "1000",               # 특징점 수 2배 (500 → 1000)
+        }],
+        remappings=_rtabmap_remappings,
+        arguments=[],  # -d 없음 → 기존 DB 유지
     )
 
     # Phase 2: Depth → LaserScan 변환
@@ -129,6 +157,7 @@ def generate_launch_description():
             base_to_camera_tf,
             camera_to_optical_tf,
             depthimage_to_laserscan,
-            rtabmap_node,
+            rtabmap_slam_node,
+            rtabmap_localization_node,
         ]
     )

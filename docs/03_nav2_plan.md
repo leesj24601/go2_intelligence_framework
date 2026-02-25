@@ -228,52 +228,110 @@ velocity_smoother:
 
 ---
 
-## Phase 4: Launch 파일 통합
+## Phase 4: Launch 파일 통합 ✅ 완료
 
 ### 파일 생성: `launch/go2_navigation.launch.py`
 
-#### 실행 노드 구성
+#### 실제 구현 구조
 ```
-go2_navigation.launch.py
-  ├─ go2_rtabmap.launch.py  (SLAM 모드 또는 Localization 모드)
-  ├─ depthimage_to_laserscan
-  └─ nav2_bringup (nav2_params.yaml 적용)
+[맵 생성]  go2_rtabmap.launch.py            (localization=false, 기본값)
+[자율주행] go2_navigation.launch.py          (자율주행 전용)
+  ├─ go2_rtabmap.launch.py (localization=true 전달)
+  │    ├─ static TF (base_link → camera_link → camera_optical_frame)
+  │    ├─ depthimage_to_laserscan → /scan
+  │    └─ RTAB-Map localization 모드 (위치 추정 + map→odom TF)
+  └─ nav2_bringup/navigation_launch.py (go2_nav2_params.yaml)
+       ├─ bt_navigator, planner_server (NavFn A*)
+       ├─ controller_server (MPPI Omni)
+       ├─ behavior_server (spin, backup)
+       ├─ velocity_smoother, collision_monitor
+       └─ lifecycle_manager
 ```
 
-#### 두 가지 모드 분기
+> ℹ️ **설계 결정**: SLAM과 자율주행을 별도 launch로 분리
+> - 맵 생성: `go2_rtabmap.launch.py` (직접 조종하며 맵 저장 → `~/.ros/rtabmap.db`)
+> - 자율주행: `go2_navigation.launch.py` (저장된 맵 불러와 Nav2 실행)
+> - Nav2에서 SLAM 병행은 실용적이지 않음 (맵 미완성 상태에서 경로 계획 불안정)
+
+#### go2_rtabmap.launch.py 버그 수정 (함께 진행)
+
+기존 코드에서 `LaunchConfiguration` 객체를 Python `if`로 비교하는 버그 발견:
 ```python
-# 파라미터로 모드 선택
-slam_mode = LaunchConfiguration('slam', default='true')
+# ❌ 버그: localization은 객체 → 항상 False → 항상 SLAM 모드로 고정
+"Mem/IncrementalMemory": "false" if localization == "true" else "true"
+```
 
-# SLAM 모드: 맵 생성하면서 동시에 주행
-# Localization 모드: 기존 맵 로드 후 주행
+**수정**: SLAM/Localization 노드를 분리 + `IfCondition`/`UnlessCondition` 사용:
+```python
+rtabmap_slam_node = Node(..., condition=UnlessCondition(localization), arguments=["-d"])
+rtabmap_localization_node = Node(..., condition=IfCondition(localization), arguments=[])
 ```
 
 ### 작업
-- [ ] `launch/go2_navigation.launch.py` 작성
-- [ ] SLAM 모드 / Localization 모드 런치 파라미터 분기
-- [ ] 전체 노드 한 번에 실행 확인
+- [x] `launch/go2_navigation.launch.py` 작성
+- [x] go2_rtabmap.launch.py LaunchConfiguration 버그 수정 (IfCondition/UnlessCondition)
+- [x] SLAM/Localization 노드 분리 (각각 올바른 파라미터 적용)
 
 ---
 
-## Phase 5: 시뮬 테스트 및 튜닝
+## Phase 5: 시뮬 테스트 및 튜닝 🔄 진행 중
 
-### 테스트 순서
-1. Isaac Sim 실행 (`go2_sim.py`)
-2. Nav2 전체 실행 (`go2_navigation.launch.py`)
-3. RViz2 실행 (`go2_sim.rviz` + Nav2 패널 추가)
-4. RViz2에서 `2D Goal Pose` 클릭 → 이동 확인
+### 실행 순서
+```bash
+# 터미널 1: Isaac Sim
+/home/cvr/anaconda3/envs/lab/bin/python scripts/go2_sim.py
+
+# 터미널 2: 맵 생성 (SLAM)
+ros2 launch launch/go2_rtabmap.launch.py           # localization=false (기본값)
+# → WASD로 돌아다니며 맵 생성. ~/.ros/rtabmap.db에 자동 저장
+
+# 터미널 3: 자율주행 (저장된 맵 사용)
+ros2 launch launch/go2_navigation.launch.py        # localization=true 자동 전달
+```
 
 ### 검증 항목
-- [ ] map → odom TF 정상 발행 (RTAB-Map)
+- [x] map → odom TF 발행 확인 (`ros2 run tf2_ros tf2_echo map odom`)
+- [ ] RTAB-Map localization 정상 동작 (loop closure 성공) ← **현재 블로커**
 - [ ] /scan 데이터 costmap 반영 확인
 - [ ] Goal Pose 수신 후 경로 계획 확인
 - [ ] 장애물 앞 정지 및 우회 확인
 - [ ] cmd_vel 값이 로봇 속도 제한 내에 있는지 확인
 
+### 🚨 현재 블로커: RTAB-Map Localization 실패
+
+#### 원인 (확정)
+Isaac Sim USD 지형의 **저질감(low texture)** 환경이 근본 원인.
+RTAB-Map 유지관리자 공식 문서:
+> *"특징점이 충분히 추출되지 않으면 'bad signature' 판정 → loop closure 시도 자체를 건너뜀. 흰 벽, 평평한 바닥에서 발생."*
+
+#### 진단 과정
+```
+1차 시도: Reg/Strategy=1 (ICP) → 저장된 노드에 scan 데이터 없어서 실패
+2차 시도: Vis/EstimationType=2 (3D-3D) → 후보 자체가 생성 안 됨
+3차 시도: LoopThr=0.01, MaxFeatures=1000 → 여전히 후보 없음
+결론: 파라미터 문제가 아닌 환경(텍스처) 문제
+```
+
+#### 현재 적용된 Localization 파라미터
+```python
+"Rtabmap/DetectionRate": "2.0",    # 2Hz (SLAM 0.5Hz에서 상향)
+"RGBD/LinearUpdate": "0.0",         # 정지 중에도 처리
+"RGBD/AngularUpdate": "0.0",
+"Rtabmap/LoopThr": "0.01",          # 임계값 대폭 완화 (기본 0.11)
+"Kp/MaxFeatures": "1000",           # 특징점 2배
+"Vis/EstimationType": "2",          # 3D-3D (depth 기반)
+"Vis/MinInliers": "15",             # 기본값 20 → 15
+"Mem/IncrementalMemory": "false",
+"Mem/InitWMWithAllNodes": "true",
+```
+
+#### 해결 방향: USD 환경에 텍스처 추가
+- 커뮤니티 표준 해결책: 환경 텍스처 다양화
+- 다른 대안: AMCL (LaserScan 기반) — 단, RGB-D 보유 시 RTAB-Map이 우월
+
 ### 튜닝 포인트
 - costmap 인플레이션 반경: **0.55m 적용** (footprint 최대반경 ~0.40 + 여유 0.15)
-- MPPI horizon: **2.8s 적용** (time_steps=56, model_dt=0.05) — 너무 짧으면 진동, 너무 길면 느림
+- MPPI horizon: **2.8s 적용** (time_steps=56, model_dt=0.05)
 - recovery behavior: spin, backup **활성화됨** (behavior_server에 포함)
 
 ---
@@ -319,12 +377,15 @@ slam_mode = LaunchConfiguration('slam', default='true')
 - [x] `config/go2_nav2_params.yaml` 작성 (MPPI Omni, horizon=2.8s)
 - [x] MPPI / costmap 파라미터 튜닝 (inflation_radius=0.55, velocity_smoother 포함)
 
-### Phase 4
-- [ ] `launch/go2_navigation.launch.py` 작성
-- [ ] SLAM/Localization 모드 분기
+### Phase 4 ✅ 완료
+- [x] `launch/go2_navigation.launch.py` 작성 (자율주행 전용)
+- [x] go2_rtabmap.launch.py LaunchConfiguration 버그 수정
+- [x] SLAM/Localization 노드 분리 (IfCondition/UnlessCondition)
 
-### Phase 5
-- [ ] 시뮬 전체 통합 테스트
+### Phase 5 🔄 진행 중
+- [x] map → odom TF 발행 확인
+- [ ] **USD 환경 텍스처 추가** (RTAB-Map localization 블로커 해결)
+- [ ] RTAB-Map localization loop closure 성공 확인
 - [ ] RViz2 Goal Pose 동작 확인
 - [ ] 장애물 회피 확인 및 튜닝
 
@@ -423,3 +484,94 @@ def _spin_loop():
 
 threading.Thread(target=_spin_loop, daemon=True).start()
 ```
+
+---
+
+### [Phase 4] go2_rtabmap.launch.py — LaunchConfiguration 비교 버그
+
+#### 원인
+
+`LaunchConfiguration` 객체를 Python `if`로 비교하면 항상 `False`가 된다.
+런치 파일 파싱 시점에 `localization`은 객체이므로 문자열 비교가 불가능하다.
+
+```python
+# ❌ 버그: localization은 LaunchConfiguration 객체 → 항상 False
+"Mem/IncrementalMemory": "false" if localization == "true" else "true"
+arguments=["-d"] if localization == "false" else []
+```
+
+결과: `localization:=true`로 실행해도 항상 SLAM 모드로 동작.
+
+#### 해결
+
+RTAB-Map 노드를 두 개로 분리 + `IfCondition` / `UnlessCondition` 사용:
+
+```python
+rtabmap_slam_node = Node(
+    condition=UnlessCondition(localization),  # localization=false 일 때 실행
+    parameters=[{"Mem/IncrementalMemory": "true", ...}],
+    arguments=["-d"],
+)
+rtabmap_localization_node = Node(
+    condition=IfCondition(localization),       # localization=true 일 때 실행
+    parameters=[{"Mem/IncrementalMemory": "false", "Mem/InitWMWithAllNodes": "true"}],
+    arguments=[],
+)
+```
+
+---
+
+### [Phase 4] WasdKeyboard stuck key — 포커스 전환 시 로봇 뒤로 이동
+
+#### 원인
+
+`Se2Keyboard`는 KEY_PRESS/KEY_RELEASE 이벤트를 누적 방식으로 처리한다:
+```python
+KEY_PRESS  → _base_command += delta
+KEY_RELEASE → _base_command -= delta
+```
+
+Isaac Sim → RViz2로 포커스 전환 시 KEY_RELEASE가 Isaac Sim에 전달되지 않아
+`_base_command`가 고착된다. (예: S 누른 채 전환 → 계속 뒤로 이동)
+
+#### 해결
+
+`advance()`를 오버라이드하여 carb에서 실제 키 상태를 매 프레임 직접 조회:
+
+```python
+def advance(self):
+    import carb
+    cmd = np.zeros(3)
+    for key_name, delta in self._INPUT_KEY_MAPPING.items():
+        key_enum = getattr(carb.input.KeyboardInput, key_name, None)
+        if key_enum is not None and self._input.get_keyboard_value(self._keyboard, key_enum) > 0:
+            cmd += delta
+    self._base_command[:] = cmd
+    return torch.tensor(self._base_command, dtype=torch.float32, device=self._sim_device)
+```
+
+이벤트 누락과 무관하게 항상 실제 키 상태를 반영한다.
+
+---
+
+### [Phase 5] RTAB-Map Localization — Isaac Sim 저질감 환경에서 loop closure 실패
+
+#### 원인
+
+Isaac Sim USD 지형의 단조로운 텍스처로 인해 RTAB-Map의 시각적 특징점(BoW) 매칭이 실패한다.
+RTAB-Map 유지관리자 공식 문서:
+> *"특징점이 충분히 추출되지 않으면 'bad signature' 판정 → loop closure 시도 건너뜀."*
+
+진단 과정:
+- `Reg/Strategy=1` (ICP): 저장된 노드에 scan 데이터 없어 실패 (`Requested laser scan data, but... doesn't have laser scan`)
+- `Vis/EstimationType=2` (3D-3D): loop closure 후보 자체가 생성 안 됨
+- `LoopThr=0.01` + `MaxFeatures=1000`: 여전히 후보 없음
+- 결론: 파라미터 문제가 아닌 **환경 텍스처 문제**
+
+> ℹ️ 커뮤니티 참고: RGB-D 카메라 보유 시 RTAB-Map localization이 AMCL보다 우월.
+> 단, 저질감 환경(흰 벽, 평평한 바닥)에서는 텍스처 추가가 필수.
+> 실 로봇(RealSense + 실제 환경)에서는 이 문제 없음.
+
+#### 해결 방향
+
+USD 환경에 텍스처 추가 → 특징점 수 증가 → loop closure 정상화

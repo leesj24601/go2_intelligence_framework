@@ -99,6 +99,18 @@ class WasdKeyboard(Se2Keyboard):
             "K": np.asarray([0.0, 0.0, 0.0]),
         }
 
+    def advance(self):
+        # carb에서 실제 키 상태를 매 프레임 직접 조회
+        # 이벤트 누락(포커스 전환 시 KEY_RELEASE 미수신)으로 인한 stuck key 문제 방지
+        import carb
+        cmd = np.zeros(3)
+        for key_name, delta in self._INPUT_KEY_MAPPING.items():
+            key_enum = getattr(carb.input.KeyboardInput, key_name, None)
+            if key_enum is not None and self._input.get_keyboard_value(self._keyboard, key_enum) > 0:
+                cmd += delta
+        self._base_command[:] = cmd
+        return torch.tensor(self._base_command, dtype=torch.float32, device=self._sim_device)
+
 
 class ArrowKeyboard(Se2Keyboard):
     """방향키(↑↓←→) → /cmd_vel 테스트용. WASD와 키 충돌 없음."""

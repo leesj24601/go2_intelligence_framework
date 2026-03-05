@@ -10,13 +10,50 @@
   <p>ROS 2 & Isaac Sim based intelligence framework for Unitree Go2.</p>
 </div>
 
-## 🗺️ Project Roadmap
-This project aims to build a comprehensive intelligence framework for the Unitree Go2 robot. We are planning to expand the framework step-by-step.
+---
 
-- [x] **3D SLAM (RTAB-Map)**: Visual and Depth based mapping in Isaac Sim.
-- [x] **Navigation (Nav2)**: Autonomous path planning and obstacle avoidance.
-- [ ] **Reinforcement Learning**: Advanced locomotion and task-specific policy training.
-- [ ] **Real-world Deployment**: Sim2Real transfer and deployment on physical Go2 hardware.
+## 🎯 Overview
+The **Go2 Intelligence Framework** is an integrated autonomous system developed for the Unitree Go2 robot within the NVIDIA Isaac Sim environment. This framework bridges advanced reinforcement learning-based locomotion with robust ROS 2-based spatial intelligence (3D SLAM and Navigation). 
+
+By providing a pre-configured pipeline of **RTAB-Map** and **Nav2**, it enables users to seamlessly transition from low-level gait control to high-level autonomous mission planning in a high-fidelity simulation, laying the groundwork for real-world Sim2Real deployment.
+
+---
+
+---
+
+## 📑 Table of Contents
+- [🎯 Overview](#-overview)
+- [🗺️ Project Roadmap](#️-project-roadmap)
+- [🛠️ Prerequisites](#️-prerequisites)
+- [⚙️ Installation & Setup](#️-installation--setup)
+- [📂 Project Structure](#-project-structure)
+- [🏗️ Modules](#️-modules)
+  - [0. Environment Setup](#0-environment-setup-map-customization)
+  - [1. Basic Robot Simulation](#1-basic-robot-simulation-manual-control)
+  - [2. 3D SLAM](#2-3d-slam-rtab-map-in-isaac-sim)
+  - [3. Autonomous Navigation](#3-autonomous-navigation-nav2)
+  - [4. Reinforcement Learning](#4-reinforcement-learning)
+  - [5. Real-world Deployment](#5-real-world-deployment)
+- [🤝 Acknowledgements](#-acknowledgements)
+- [📄 License](#-license)
+
+---
+
+## 🗺️ Project Roadmap
+This project aims to build a comprehensive intelligence framework for the Unitree Go2 robot through a phased development approach.
+
+- [x] **Phase 1: 3D SLAM & Localization**
+  - [x] RTAB-Map integration with Isaac Sim visual/depth sensors.
+  - [x] Point cloud mapping and automated map database management.
+- [x] **Phase 2: Autonomous Navigation (Nav2)**
+  - [x] Integration with ROS 2 Nav2 stack for autonomous waypoint tracking.
+  - [x] Dynamic obstacle avoidance and optimized Nav2 parameter tuning.
+- [ ] **Phase 3: Advanced Reinforcement Learning**
+  - [ ] Training custom locomotion policies using NVIDIA Isaac Lab.
+  - [ ] Integration of vision-conditioned gait or task-oriented behaviors.
+- [ ] **Phase 4: Hardware Deployment & Sim2Real**
+  - [ ] ROS 2 bridge development for physical Unitree Go2 hardware.
+  - [ ] Comprehensive Sim2Real transfer guide and real-world validation.
 
 ---
 

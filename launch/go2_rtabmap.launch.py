@@ -1,7 +1,7 @@
 from launch import LaunchDescription
 from launch.actions import DeclareLaunchArgument
-from launch.substitutions import Command, FindExecutable, LaunchConfiguration, PathJoinSubstitution
 from launch.conditions import IfCondition, UnlessCondition
+from launch.substitutions import Command, FindExecutable, LaunchConfiguration, PathJoinSubstitution
 from launch_ros.actions import Node
 from launch_ros.descriptions import ParameterValue
 from launch_ros.substitutions import FindPackageShare
@@ -16,6 +16,7 @@ def generate_launch_description():
     description_package = LaunchConfiguration("description_package")
     description_file = LaunchConfiguration("description_file")
     prefix = LaunchConfiguration("prefix")
+    use_fake_joint_states = LaunchConfiguration("use_fake_joint_states")
 
     # ROS 쪽에서 가장 흔한 패턴인 xacro -> robot_state_publisher 흐름을 사용한다.
     # camera_link 체인은 기존 static TF를 유지하므로 본체/다리 모델만 URDF에서 가져온다.
@@ -84,6 +85,7 @@ def generate_launch_description():
         package="joint_state_publisher",
         executable="joint_state_publisher",
         output="screen",
+        condition=IfCondition(use_fake_joint_states),
         parameters=[
             {
                 "use_sim_time": use_sim_time,
@@ -222,6 +224,11 @@ def generate_launch_description():
                 "prefix",
                 default_value="",
                 description="Optional TF/joint prefix for robot description",
+            ),
+            DeclareLaunchArgument(
+                "use_fake_joint_states",
+                default_value="false",
+                description="Use joint_state_publisher for a fixed pose when no real /joint_states source exists",
             ),
             DeclareLaunchArgument(
                 "localization",

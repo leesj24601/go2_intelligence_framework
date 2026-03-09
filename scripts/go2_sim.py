@@ -170,8 +170,51 @@ class CmdVelNode:
 
     def shutdown(self):
         self._node.destroy_node()
-        if self._rclpy.ok():
-            self._rclpy.shutdown()
+
+
+class JointStatePublisherNode:
+    """Isaac Sim articulation 상태를 실제 /joint_states로 퍼블리시."""
+
+    def __init__(self, joint_names: list[str]):
+        import rclpy
+        from rclpy.node import Node
+        from sensor_msgs.msg import JointState
+
+        if not rclpy.ok():
+            rclpy.init()
+
+        self._rclpy = rclpy
+        self._JointState = JointState
+
+        class _Node(Node):
+            def __init__(self):
+                super().__init__("go2_joint_state_publisher")
+                self.pub = self.create_publisher(JointState, "/joint_states", 10)
+
+        self._node = _Node()
+        self._joint_names = list(joint_names)
+        print(f"[INFO] /joint_states publisher 시작 ({len(self._joint_names)} joints)")
+
+    @staticmethod
+    def _to_builtin_time(sim_time_s: float):
+        from builtin_interfaces.msg import Time
+
+        msg = Time()
+        msg.sec = int(sim_time_s)
+        msg.nanosec = int((sim_time_s - msg.sec) * 1_000_000_000)
+        return msg
+
+    def publish(self, sim_time_s: float, joint_pos, joint_vel=None):
+        msg = self._JointState()
+        msg.header.stamp = self._to_builtin_time(sim_time_s)
+        msg.name = self._joint_names
+        msg.position = [float(x) for x in joint_pos]
+        if joint_vel is not None:
+            msg.velocity = [float(x) for x in joint_vel]
+        self._node.pub.publish(msg)
+
+    def shutdown(self):
+        self._node.destroy_node()
 
 
 def setup_ros2_camera_graph(camera_prim_path: str):
@@ -411,8 +454,11 @@ def main(env_cfg, agent_cfg):
         )
     )
 
+    robot = env.unwrapped.scene["robot"]
     cmd_vel_node = CmdVelNode()
+    joint_state_pub = JointStatePublisherNode(robot.joint_names)
     _last_log_time = 0.0
+    sim_time_s = 0.0
 
     # 명령 manager 미리 캐싱
     cmd_term = None
@@ -478,18 +524,35 @@ def main(env_cfg, agent_cfg):
         with torch.inference_mode():
             actions = policy(obs)
             obs, _, _, _ = env.step(actions)
+            sim_time_s += dt
             # env.step() 내부에서 SIMULATION pipeline 실행:
             # - IsaacComputeOdometry가 prim에서 직접 pos/quat/vel 읽기
             # - ROS2PublishOdometry + ROS2PublishRawTransformTree 퍼블리시
             # - 카메라 렌더 + 퍼블리시
             # → 모두 같은 tick에서 실행되어 완벽 동기화
 
+        try:
+            joint_state_pub.publish(
+                sim_time_s,
+                robot.data.joint_pos[0].detach().cpu().tolist(),
+                robot.data.joint_vel[0].detach().cpu().tolist(),
+            )
+        except Exception:
+            pass
+
         if args_cli.rt.lower() in ("true", "1", "yes"):
             sleep_time = dt - (time.time() - start_time)
             if sleep_time > 0:
                 time.sleep(sleep_time)
 
+    joint_state_pub.shutdown()
     cmd_vel_node.shutdown()
+    try:
+        import rclpy
+        if rclpy.ok():
+            rclpy.shutdown()
+    except Exception:
+        pass
     env.close()
 
 

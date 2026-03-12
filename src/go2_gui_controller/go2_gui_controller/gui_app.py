@@ -10,9 +10,10 @@ from rclpy.node import Node
 from rclpy.parameter import Parameter
 
 try:
-    from python_qt_binding.QtCore import QTimer
+    from python_qt_binding.QtCore import Qt, QTimer
     from python_qt_binding.QtWidgets import (
         QApplication,
+        QFrame,
         QGridLayout,
         QHBoxLayout,
         QLabel,
@@ -21,14 +22,16 @@ try:
         QListWidgetItem,
         QMainWindow,
         QPushButton,
+        QStackedWidget,
         QTextEdit,
         QVBoxLayout,
         QWidget,
     )
 except ImportError:
-    from PyQt5.QtCore import QTimer
+    from PyQt5.QtCore import Qt, QTimer
     from PyQt5.QtWidgets import (
         QApplication,
+        QFrame,
         QGridLayout,
         QHBoxLayout,
         QLabel,
@@ -37,15 +40,18 @@ except ImportError:
         QListWidgetItem,
         QMainWindow,
         QPushButton,
+        QStackedWidget,
         QTextEdit,
         QVBoxLayout,
         QWidget,
     )
 
+from .charts_panel import ChartsPanel
 from .commands import CommandType, ParsedCommand
 from .manual_control import ManualControlBridge
 from .navigator_bridge import NavigatorBridge
 from .state_bridge import StateBridge
+from .telemetry_bridge import TelemetryBridge
 from .text_command_parser import TextCommandParser
 from .voice_command_listener import VoiceCommandListener, VoiceRecognitionResult
 from .waypoint_registry import WaypointRegistry
@@ -64,6 +70,7 @@ class GuiControllerNode(Node):
         waypoint_file = Path(self.get_parameter("waypoint_file").value)
         self.waypoint_registry = WaypointRegistry(waypoint_file)
         self.state_bridge = StateBridge(self)
+        self.telemetry = TelemetryBridge(self)
         self.manual_control = ManualControlBridge(self)
         self.navigator = NavigatorBridge(self, self.state_bridge, self.waypoint_registry)
         self.parser = TextCommandParser(self.waypoint_registry)
@@ -81,6 +88,7 @@ class MainWindow(QMainWindow):
     VOICE_POLL_MS = 100
     ROS_SPIN_MS = 20
     STATUS_REFRESH_MS = 50
+    CHART_REFRESH_MS = 100
     MANUAL_PUBLISH_MS = 50
 
     def __init__(self, ros_node: GuiControllerNode):
@@ -93,7 +101,7 @@ class MainWindow(QMainWindow):
         self._voice_listener = VoiceCommandListener()
         self._voice_result_queue: queue.Queue[VoiceRecognitionResult] = queue.Queue()
         self._voice_listening = False
-        self.setWindowTitle("Go2 GUI Controller")
+        self.setWindowTitle("Go2 Operator Console")
         self._build_ui()
 
         self._ros_timer = QTimer(self)
@@ -104,6 +112,10 @@ class MainWindow(QMainWindow):
         self._status_timer.timeout.connect(self._refresh_status)
         self._status_timer.start(self.STATUS_REFRESH_MS)
 
+        self._chart_timer = QTimer(self)
+        self._chart_timer.timeout.connect(self._refresh_charts)
+        self._chart_timer.start(self.CHART_REFRESH_MS)
+
         self._manual_timer = QTimer(self)
         self._manual_timer.timeout.connect(self._publish_motion_command)
         self._manual_timer.start(self.MANUAL_PUBLISH_MS)
@@ -113,59 +125,262 @@ class MainWindow(QMainWindow):
         self._voice_timer.start(self.VOICE_POLL_MS)
 
     def _build_ui(self) -> None:
+        self._apply_styles()
         root = QWidget()
         layout = QVBoxLayout(root)
-
-        self.pose_label = QLabel("Pose: x=0.00, y=0.00")
-        self.nav_status_label = QLabel("Nav: idle")
-        self.last_result_label = QLabel("Last result: none")
-        layout.addWidget(self.pose_label)
-        layout.addWidget(self.nav_status_label)
-        layout.addWidget(self.last_result_label)
-
-        self.feedback_label = QLabel("Feedback: ready")
-        layout.addWidget(self.feedback_label)
+        layout.setContentsMargins(18, 18, 18, 18)
+        layout.setSpacing(16)
 
         self.log_view = QTextEdit()
         self.log_view.setReadOnly(True)
         self.log_view.setPlaceholderText("Command and activity log")
-        layout.addWidget(self.log_view)
+        self.log_view.setObjectName("ConsoleLog")
 
-        self.waypoint_list = QListWidget()
-        self._reload_waypoint_list()
-        layout.addWidget(self.waypoint_list)
+        self.feedback_label = QLabel("Feedback: ready")
+        self.voice_status_label = QLabel(self._voice_status_text())
+        self.feedback_label.setObjectName("FeedbackBanner")
+        self.feedback_label.setWordWrap(True)
 
-        waypoint_row = QHBoxLayout()
-        go_button = QPushButton("Go To Selected Waypoint")
-        go_button.clicked.connect(self._go_to_selected_waypoint)
-        delete_button = QPushButton("Delete Waypoint")
-        delete_button.clicked.connect(self._delete_selected_waypoint)
-        cancel_button = QPushButton("Cancel Goal")
-        cancel_button.clicked.connect(self._cancel_navigation)
-        waypoint_row.addWidget(go_button)
-        waypoint_row.addWidget(delete_button)
-        waypoint_row.addWidget(cancel_button)
-        layout.addLayout(waypoint_row)
+        layout.addWidget(self._build_header())
 
-        save_row = QHBoxLayout()
-        self.save_name_input = QLineEdit()
-        self.save_name_input.setPlaceholderText("Waypoint name to save current pose")
-        save_button = QPushButton("Save Current Pose")
-        save_button.clicked.connect(self._save_current_pose)
-        save_row.addWidget(self.save_name_input)
-        save_row.addWidget(save_button)
-        layout.addLayout(save_row)
+        shell_row = QHBoxLayout()
+        shell_row.setSpacing(16)
+        self.page_stack = QStackedWidget()
+        shell_row.addWidget(self._build_sidebar(), 0)
 
-        rename_row = QHBoxLayout()
-        self.rename_name_input = QLineEdit()
-        self.rename_name_input.setPlaceholderText("New name for selected waypoint")
-        rename_button = QPushButton("Rename Waypoint")
-        rename_button.clicked.connect(self._rename_selected_waypoint)
-        rename_row.addWidget(self.rename_name_input)
-        rename_row.addWidget(rename_button)
-        layout.addLayout(rename_row)
+        self.page_stack.addWidget(self._build_control_tab())
+        self.page_stack.addWidget(self._build_monitor_tab())
+        self._charts_panel = ChartsPanel(self._node.telemetry)
+        self.page_stack.addWidget(self._charts_panel)
+        self.page_stack.addWidget(self._build_logs_tab())
+        shell_row.addWidget(self.page_stack, 1)
+        layout.addLayout(shell_row, 1)
+
+        self.nav_list.setCurrentRow(0)
+        self.page_stack.setCurrentIndex(0)
+
+        self.setCentralWidget(root)
+
+    def _apply_styles(self) -> None:
+        self.setStyleSheet(
+            """
+            QWidget {
+                background: #f4efe5;
+                color: #14342d;
+                font-size: 13px;
+            }
+            QMainWindow {
+                background: #efe7da;
+            }
+            QFrame#HeaderCard, QFrame#SidebarCard, QFrame#PanelCard, QFrame#MetricCard {
+                background: #fbf8f1;
+                border: 1px solid #d9cebd;
+                border-radius: 18px;
+            }
+            QLabel#Eyebrow {
+                color: #8b5e34;
+                font-size: 11px;
+                font-weight: 700;
+                letter-spacing: 1px;
+                text-transform: uppercase;
+            }
+            QLabel#PageTitle {
+                font-size: 30px;
+                font-weight: 800;
+                color: #102a24;
+            }
+            QLabel#PageSubtitle {
+                color: #48645c;
+                font-size: 13px;
+            }
+            QLabel#SectionTitle {
+                font-size: 18px;
+                font-weight: 700;
+                color: #102a24;
+            }
+            QLabel#SectionHint {
+                color: #5f766f;
+                font-size: 12px;
+            }
+            QLabel#MetricTitle {
+                color: #7b6754;
+                font-size: 11px;
+                font-weight: 700;
+                text-transform: uppercase;
+            }
+            QLabel#MetricValue {
+                color: #14342d;
+                font-size: 16px;
+                font-weight: 700;
+            }
+            QLabel#FeedbackBanner {
+                background: #163c34;
+                color: #f8f3e7;
+                border-radius: 12px;
+                padding: 10px 12px;
+                font-weight: 600;
+            }
+            QListWidget#SidebarNav {
+                background: transparent;
+                border: none;
+                outline: none;
+                padding: 4px;
+            }
+            QListWidget#SidebarNav::item {
+                background: transparent;
+                border-radius: 12px;
+                padding: 12px 14px;
+                margin: 4px 0px;
+                color: #24463e;
+                font-weight: 600;
+            }
+            QListWidget#SidebarNav::item:selected {
+                background: #14342d;
+                color: #f7f1e3;
+            }
+            QPushButton {
+                background: #1d5448;
+                color: #f8f3e7;
+                border: none;
+                border-radius: 12px;
+                padding: 10px 14px;
+                font-weight: 700;
+            }
+            QPushButton:hover {
+                background: #246757;
+            }
+            QPushButton:pressed {
+                background: #143d34;
+            }
+            QLineEdit, QTextEdit, QListWidget {
+                background: #fffdfa;
+                border: 1px solid #d7cab8;
+                border-radius: 12px;
+                padding: 8px 10px;
+            }
+            QTextEdit#ConsoleLog {
+                background: #fffdfa;
+                border-radius: 16px;
+                padding: 12px;
+            }
+            """
+        )
+
+    def _build_header(self) -> QWidget:
+        card = QFrame()
+        card.setObjectName("HeaderCard")
+        layout = QHBoxLayout(card)
+        layout.setContentsMargins(20, 18, 20, 18)
+        layout.setSpacing(20)
+
+        title_col = QVBoxLayout()
+        eyebrow = QLabel("Operator Console")
+        eyebrow.setObjectName("Eyebrow")
+        title = QLabel("Go2 Mission Desk")
+        title.setObjectName("PageTitle")
+        subtitle = QLabel("Control, observe, and debug the robot from one focused workspace.")
+        subtitle.setObjectName("PageSubtitle")
+        subtitle.setWordWrap(True)
+        title_col.addWidget(eyebrow)
+        title_col.addWidget(title)
+        title_col.addWidget(subtitle)
+        layout.addLayout(title_col, 1)
+
+        metrics_col = QHBoxLayout()
+        metrics_col.setSpacing(12)
+        nav_card, self.header_nav_value = self._make_metric_card("Nav Status", "idle")
+        voice_card, self.header_voice_value = self._make_metric_card(
+            "Voice",
+            self._voice_status_text().replace("Voice: ", ""),
+        )
+        pose_card, self.header_pose_value = self._make_metric_card("Pose Frame", "odom")
+        metrics_col.addWidget(self._wrap_metric(nav_card))
+        metrics_col.addWidget(self._wrap_metric(voice_card))
+        metrics_col.addWidget(self._wrap_metric(pose_card))
+        layout.addLayout(metrics_col)
+        return card
+
+    def _build_sidebar(self) -> QWidget:
+        card = QFrame()
+        card.setObjectName("SidebarCard")
+        card.setFixedWidth(220)
+        layout = QVBoxLayout(card)
+        layout.setContentsMargins(16, 16, 16, 16)
+        layout.setSpacing(14)
+
+        section = QLabel("Views")
+        section.setObjectName("Eyebrow")
+        label = QLabel("Console Panels")
+        label.setObjectName("SectionTitle")
+        hint = QLabel("Popular robotics tools tend to keep navigation simple and persistent. This follows that pattern.")
+        hint.setObjectName("SectionHint")
+        hint.setWordWrap(True)
+
+        self.nav_list = QListWidget()
+        self.nav_list.setObjectName("SidebarNav")
+        self.nav_list.addItems(["Control", "Monitor", "Charts", "Logs"])
+        self.nav_list.currentRowChanged.connect(self.page_stack.setCurrentIndex)
+
+        layout.addWidget(section)
+        layout.addWidget(label)
+        layout.addWidget(hint)
+        layout.addWidget(self.nav_list, 1)
+        return card
+
+    def _build_panel_card(self, title: str, hint: str | None = None) -> tuple[QFrame, QVBoxLayout]:
+        card = QFrame()
+        card.setObjectName("PanelCard")
+        layout = QVBoxLayout(card)
+        layout.setContentsMargins(16, 16, 16, 16)
+        layout.setSpacing(12)
+
+        header = QLabel(title)
+        header.setObjectName("SectionTitle")
+        layout.addWidget(header)
+        if hint:
+            hint_label = QLabel(hint)
+            hint_label.setObjectName("SectionHint")
+            hint_label.setWordWrap(True)
+            layout.addWidget(hint_label)
+        return card, layout
+
+    def _make_metric_card(self, title: str, value: str) -> tuple[QFrame, QLabel]:
+        card = QFrame()
+        card.setObjectName("MetricCard")
+        layout = QVBoxLayout(card)
+        layout.setContentsMargins(14, 12, 14, 12)
+        layout.setSpacing(6)
+        title_label = QLabel(title)
+        title_label.setObjectName("MetricTitle")
+        value_label = QLabel(value)
+        value_label.setObjectName("MetricValue")
+        value_label.setWordWrap(True)
+        layout.addWidget(title_label)
+        layout.addWidget(value_label)
+        return card, value_label
+
+    def _wrap_metric(self, card: QWidget) -> QWidget:
+        card.setMinimumWidth(150)
+        return card
+
+    def _build_control_tab(self) -> QWidget:
+        tab = QWidget()
+        layout = QVBoxLayout(tab)
+        layout.setContentsMargins(0, 0, 0, 0)
+        layout.setSpacing(16)
+
+        layout.addWidget(self.feedback_label)
+
+        top_row = QHBoxLayout()
+        top_row.setSpacing(16)
+
+        manual_card, manual_layout = self._build_panel_card(
+            "Manual Control",
+            "Low-latency nudges and stop-first control for close-range adjustment.",
+        )
 
         manual_grid = QGridLayout()
+        manual_grid.setSpacing(10)
         forward_button = QPushButton("Forward")
         back_button = QPushButton("Back")
         left_button = QPushButton("Left")
@@ -189,17 +404,74 @@ class MainWindow(QMainWindow):
         manual_grid.addWidget(back_button, 2, 1)
         manual_grid.addWidget(turn_left_button, 3, 0)
         manual_grid.addWidget(turn_right_button, 3, 2)
-        layout.addLayout(manual_grid)
+        manual_layout.addLayout(manual_grid)
+        top_row.addWidget(manual_card, 1)
 
+        waypoint_card, waypoint_layout = self._build_panel_card(
+            "Waypoints",
+            "Save current map pose, rename it, and send RViz-compatible navigation goals.",
+        )
+
+        self.pose_label = QLabel("Pose: x=0.00, y=0.00")
+        self.nav_status_label = QLabel("Nav: idle")
+        self.last_result_label = QLabel("Last result: none")
+
+        self.waypoint_list = QListWidget()
+        self._reload_waypoint_list()
+        waypoint_layout.addWidget(self.waypoint_list)
+
+        waypoint_row = QHBoxLayout()
+        go_button = QPushButton("Go To Selected Waypoint")
+        go_button.clicked.connect(self._go_to_selected_waypoint)
+        delete_button = QPushButton("Delete Waypoint")
+        delete_button.clicked.connect(self._delete_selected_waypoint)
+        cancel_button = QPushButton("Cancel Goal")
+        cancel_button.clicked.connect(self._cancel_navigation)
+        waypoint_row.addWidget(go_button)
+        waypoint_row.addWidget(delete_button)
+        waypoint_row.addWidget(cancel_button)
+        waypoint_layout.addLayout(waypoint_row)
+
+        save_row = QHBoxLayout()
+        self.save_name_input = QLineEdit()
+        self.save_name_input.setPlaceholderText("Waypoint name to save current pose")
+        save_button = QPushButton("Save Current Pose")
+        save_button.clicked.connect(self._save_current_pose)
+        save_row.addWidget(self.save_name_input)
+        save_row.addWidget(save_button)
+        waypoint_layout.addLayout(save_row)
+
+        rename_row = QHBoxLayout()
+        self.rename_name_input = QLineEdit()
+        self.rename_name_input.setPlaceholderText("New name for selected waypoint")
+        rename_button = QPushButton("Rename Waypoint")
+        rename_button.clicked.connect(self._rename_selected_waypoint)
+        rename_row.addWidget(self.rename_name_input)
+        rename_row.addWidget(rename_button)
+        waypoint_layout.addLayout(rename_row)
+        top_row.addWidget(waypoint_card, 1)
+        layout.addLayout(top_row)
+
+        bottom_row = QHBoxLayout()
+        bottom_row.setSpacing(16)
+
+        text_card, text_layout = self._build_panel_card(
+            "Text Command",
+            "Structured command parsing for waypoint and relative navigation.",
+        )
         self.command_input = QLineEdit()
         self.command_input.setPlaceholderText("Type commands like: go to home, forward 1m, turn left 90")
         run_button = QPushButton("Run Text Command")
         run_button.clicked.connect(self._run_text_command)
-        layout.addWidget(self.command_input)
-        layout.addWidget(run_button)
+        text_layout.addWidget(self.command_input)
+        text_layout.addWidget(run_button)
+        bottom_row.addWidget(text_card, 1)
 
-        self.voice_status_label = QLabel(self._voice_status_text())
-        layout.addWidget(self.voice_status_label)
+        voice_card, voice_layout = self._build_panel_card(
+            "Voice Command",
+            "Quick speech-triggered actions with fallback transcript testing.",
+        )
+        voice_layout.addWidget(self.voice_status_label)
 
         voice_row = QHBoxLayout()
         self.voice_transcript_input = QLineEdit()
@@ -212,9 +484,68 @@ class MainWindow(QMainWindow):
         voice_row.addWidget(self.voice_transcript_input)
         voice_row.addWidget(voice_run_button)
         voice_row.addWidget(self.voice_button)
-        layout.addLayout(voice_row)
+        voice_layout.addLayout(voice_row)
+        bottom_row.addWidget(voice_card, 1)
 
-        self.setCentralWidget(root)
+        layout.addLayout(bottom_row)
+        return tab
+
+    def _build_monitor_tab(self) -> QWidget:
+        tab = QWidget()
+        layout = QVBoxLayout(tab)
+        layout.setContentsMargins(0, 0, 0, 0)
+        layout.setSpacing(16)
+
+        metrics_row = QHBoxLayout()
+        metrics_row.setSpacing(16)
+        pose_card, self.monitor_pose_value = self._make_metric_card("Current Pose", "map: x=0.00, y=0.00")
+        nav_card, self.monitor_nav_value = self._make_metric_card("Nav State", "idle")
+        result_card, self.monitor_result_value = self._make_metric_card("Last Result", "none")
+        metrics_row.addWidget(pose_card, 1)
+        metrics_row.addWidget(nav_card, 1)
+        metrics_row.addWidget(result_card, 1)
+        layout.addLayout(metrics_row)
+
+        detail_row = QHBoxLayout()
+        detail_row.setSpacing(16)
+
+        runtime_card, runtime_layout = self._build_panel_card(
+            "Runtime Signals",
+            "Operator-facing summaries that should be readable without opening logs.",
+        )
+        self.monitor_feedback_label = QLabel("Feedback: ready")
+        self.monitor_feedback_label.setWordWrap(True)
+        self.monitor_voice_label = QLabel(self._voice_status_text())
+        self.monitor_voice_label.setWordWrap(True)
+        runtime_layout.addWidget(self.monitor_feedback_label)
+        runtime_layout.addWidget(self.monitor_voice_label)
+        detail_row.addWidget(runtime_card, 1)
+
+        topic_card, topic_layout = self._build_panel_card(
+            "Topic Heartbeat",
+            "Live summary of the core signals the console is observing.",
+        )
+        self.topic_summary_label = QLabel("Topics: waiting for telemetry")
+        self.topic_summary_label.setWordWrap(True)
+        topic_layout.addWidget(self.topic_summary_label)
+        detail_row.addWidget(topic_card, 1)
+
+        layout.addLayout(detail_row)
+        return tab
+
+    def _build_logs_tab(self) -> QWidget:
+        tab = QWidget()
+        layout = QVBoxLayout(tab)
+        layout.setContentsMargins(0, 0, 0, 0)
+        layout.setSpacing(16)
+
+        intro_card, intro_layout = self._build_panel_card(
+            "Event Log",
+            "Chronological command, parser, waypoint, and runtime events for quick triage.",
+        )
+        intro_layout.addWidget(self.log_view)
+        layout.addWidget(intro_card)
+        return tab
 
     def _spin_ros(self) -> None:
         rclpy.spin_once(self._node, timeout_sec=0.0)
@@ -223,9 +554,22 @@ class MainWindow(QMainWindow):
 
     def _refresh_status(self) -> None:
         state = self._node.state_bridge.state
-        self.pose_label.setText(f"Pose: {self._node.state_bridge.pose_text()}")
+        pose_text = self._node.state_bridge.pose_text()
+        self.pose_label.setText(f"Pose: {pose_text}")
         self.nav_status_label.setText(f"Nav: {state.nav_status}")
         self.last_result_label.setText(f"Last result: {state.last_result}")
+        self.monitor_pose_value.setText(pose_text)
+        self.monitor_nav_value.setText(state.nav_status)
+        self.monitor_result_value.setText(state.last_result)
+        self.monitor_feedback_label.setText(self.feedback_label.text())
+        self.monitor_voice_label.setText(self.voice_status_label.text())
+        self.topic_summary_label.setText("Topics:\n" + "\n".join(self._node.telemetry.topic_summary_lines()))
+        self.header_nav_value.setText(state.nav_status)
+        self.header_voice_value.setText(self.voice_status_label.text().replace("Voice: ", ""))
+        self.header_pose_value.setText(state.frame_id)
+
+    def _refresh_charts(self) -> None:
+        self._charts_panel.refresh()
 
     def _reload_waypoint_list(self) -> None:
         self.waypoint_list.clear()
@@ -580,7 +924,7 @@ def run_app(waypoint_file: Path) -> None:
     node = GuiControllerNode(waypoint_file)
     app = QApplication([])
     window = MainWindow(node)
-    window.resize(520, 560)
+    window.resize(980, 760)
     window.show()
     try:
         node.navigator.start_wait_until_active()

@@ -120,7 +120,7 @@ def generate_launch_description():
         "RGBD/ProximityPathMaxNeighbors": "10",
         "RGBD/AngularUpdate": "0.1",
         "RGBD/LinearUpdate": "0.1",
-        "Reg/Force3DoF": "false",
+        "Reg/Force3DoF": "true",        # 평지 실내 맵 생성/위치추정에서 roll/pitch 기울기 영향 억제
         "Grid/FromDepth": "true",
         "Grid/RangeMax": "5.0",
         "Grid/CellSize": "0.05",
@@ -152,6 +152,10 @@ def generate_launch_description():
             "database_path": slam_db,
             "Mem/IncrementalMemory": "true",
             "Mem/InitWMWithAllNodes": "false",
+            "Rtabmap/DetectionRate": "1.0",   # 424x240 맵 생성 시 처리 간격 축소
+            "Kp/MaxFeatures": "1000",         # 저해상도에서 특징점 부족 완화
+            "Rtabmap/LoopThr": "0.20",        # 잘못된 loop closure 수용을 더 보수적으로 제한
+            "RGBD/ProximityBySpace": "false", # 시뮬(gt odom) 맵 생성 시 근접 제약으로 그래프가 꼬이는 현상 완화
         }],
         remappings=_rtabmap_remappings,
         arguments=["-d"],  # 기존 DB 삭제 후 새로 시작

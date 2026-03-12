@@ -651,3 +651,57 @@ RTAB-Map 유지관리자 공식 문서:
 #### 해결 방향
 
 USD 환경에 텍스처 추가 → 특징점 수 증가 → loop closure 정상화
+
+---
+
+### [Phase 6] RealSense 정합 시뮬레이션 — `424x240` 재매핑 / localization 안정화
+
+#### 배경
+
+실로봇 카메라 제약이 `424x240`이므로, 시뮬도 같은 해상도로 맞춰 RTAB-Map / Nav2 조건을 통일했다.
+
+이 과정에서 아래 현상이 연속으로 관찰되었다.
+
+- `/scan` 주기는 좋아졌지만 기존 DB로 localization이 잘 안 붙음
+- 특정 벽/기둥이 ghost layer처럼 여러 겹으로 보임
+- 심하면 특정 시점 이후 맵 전체가 레이어처럼 겹쳐 보임
+
+#### 원인 정리
+
+- 기존 DB가 더 높은 해상도 또는 다른 카메라 조건에서 만들어진 상태였을 가능성이 큼
+- `424x240`에서는 특징점 밀도가 낮아지므로 기존 파라미터가 너무 공격적이었음
+- 시뮬 `/odom`은 ground-truth에 가까우므로, 주 원인은 odom drift보다 **잘못된 visual graph constraint** 쪽으로 보는 것이 타당
+- 특정 구간을 현재 보고 있지 않아도 ghost가 남아 있으면 그건 현재 센서 문제가 아니라 **이미 잘못 저장된 과거 노드**가 누적된 상태
+
+#### 적용한 조치
+
+1. 시뮬 render product 해상도를 `424x240`으로 고정
+2. 기존 localization DB 백업
+3. 동일 해상도 조건으로 맵 재생성
+4. SLAM 모드 RTAB-Map 파라미터를 저해상도 기준으로 보수화:
+
+```python
+"Rtabmap/DetectionRate": "1.0"
+"Kp/MaxFeatures": "1000"
+"Rtabmap/LoopThr": "0.20"
+"RGBD/ProximityBySpace": "false"
+"Reg/Force3DoF": "true"
+```
+
+#### 해석 포인트
+
+- `Rtabmap/DetectionRate`
+  - 카메라/scan Hz와 별개로 RTAB-Map이 실제로 keyframe 처리하는 빈도
+  - `424x240`에서는 `0.5Hz`가 너무 낮아 keyframe 간격이 커졌음
+
+- `Reg/Force3DoF`
+  - 사족보행 robot body는 6DoF로 움직이더라도,
+  - flat indoor 맵 생성/위치추정에서는 그래프 최적화를 `x, y, yaw` 중심으로 제한하는 것이 더 안정적일 수 있음
+
+- `RGBD/ProximityBySpace: false`
+  - 좋은 odom가 있는 시뮬에서 애매한 근접 시각 제약으로 그래프가 꼬이는 현상 억제
+
+#### 결과
+
+- 같은 `424x240` 조건으로 새 DB를 다시 만든 뒤 localization 성공
+- 따라서 실로봇 제약을 유지하면서도 시뮬에서 충분히 재현 가능한 파이프라인을 확보

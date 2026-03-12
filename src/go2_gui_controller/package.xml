@@ -15,8 +15,10 @@
   <depend>nav2_simple_commander</depend>
   <depend>portaudio19-dev</depend>
   <depend>python3-numpy</depend>
+  <depend>python3-pyqtgraph</depend>
   <depend>python_qt_binding</depend>
   <depend>rclpy</depend>
+  <depend>sensor_msgs</depend>
   <depend>tf2_ros</depend>
   <exec_depend>ament_index_python</exec_depend>
 

@@ -592,31 +592,70 @@ rviz2 -d config/go2_sim.rviz
 | OccupancyGrid 비어있음 | `Grid/FromDepth:=true` 파라미터 확인 |
 | 메모리 과다 사용 | `Mem/STMSize` 파라미터로 단기 메모리 크기 제한 |
 | use_sim_time 미적용 | `/clock` 토픽 확인, `use_sim_time: True` 파라미터 설정 |
-| **바닥/벽이 여러 각도로 겹쳐 보임 (ghost layer)** | `Reg/Force3DoF: false`로 변경. 아래 참고. |
+| **저해상도(424x240) 맵 생성 시 특정 벽/기둥이 ghost layer로 겹침** | `DetectionRate`/`Kp/MaxFeatures` 상향, `LoopThr` 보수화, `ProximityBySpace` 비활성화, flat indoor 기준 `Reg/Force3DoF: true` 적용 |
 
-#### 포인트 클라우드 겹침 (Reg/Force3DoF) — 해결됨
+#### 저해상도(424x240) 맵 생성 ghost layer / localization 실패 — 최신 재검증
 
-**증상**: 3D 맵에서 바닥이 평평해야 하는데 여러 각도의 평면이 부채꼴처럼 겹쳐 나타남. 기둥 등 물체도 2~3겹으로 보임.
+**증상**:
+- `424x240`로 해상도를 실카메라와 맞춘 뒤 `/scan` 주기는 안정화되었지만,
+- 기존 DB로 localization이 잘 안 붙고,
+- 맵 생성 시 특정 벽/기둥이 빗살처럼 여러 겹으로 쌓이거나,
+- 잘 되다가도 특정 구간 이후 맵이 전체적으로 겹쳐 보이는 현상이 있었다.
 
-**원인**: `Reg/Force3DoF: true` + 6DoF ground truth odom 충돌.
+**원인 해석**:
+- 기존 DB가 더 높은 해상도/다른 카메라 조건에서 만들어졌을 가능성이 커서, `424x240` 입력으로는 재로컬라이즈가 약해질 수 있었다.
+- `424x240`에서는 시각 특징점 밀도가 낮아지므로 `DetectionRate=0.5Hz`로는 keyframe 간격이 너무 커졌다.
+- 시뮬은 `/odom`이 거의 ground-truth라 odom drift보다는 **시각 매칭이 잘못된 loop / proximity 제약**이 그래프를 망치는 쪽이 더 유력했다.
+- 특히 특정 구간만 고스트가 남고, 현재 그 구간을 보고 있지 않아도 맵에 계속 보이면 실시간 센서 문제가 아니라 **이미 잘못 저장된 과거 노드/포인트가 누적된 상태**로 해석하는 것이 맞다.
 
-Go2는 보행 중 body가 pitch/roll로 진동한다 (±5~15°). `IsaacComputeOdometry`는 이 6DoF 포즈를 정확히 퍼블리시하지만, RTAB-Map이 `Force3DoF=true`일 때 내부 그래프 최적화를 (x, y, yaw)만으로 수행한다. 결과적으로:
+**핵심 관찰**:
+- `RTAB-Map /info`에서 현재 프레임의 visual words가 0인 순간이 확인되었다.
+- 즉 `/scan` 문제라기보다 RGB-D 기반 localization / graph optimization 쪽 문제였다.
+- RViz `Fixed Frame=map`에서는 localization 보정이 섞여 보이므로, `/scan` 품질 확인은 `odom` 또는 `base_link` 기준이 더 적절했다.
 
-```
-프레임 A → pitch=+5°로 투영된 포인트 클라우드 저장
-프레임 B → pitch=-3°로 투영된 포인트 클라우드 저장
-최적화 → pitch를 0°로 강제 보정 → 두 클라우드의 기울기 차이가 그대로 남음
-→ 같은 바닥이 서로 다른 각도로 겹쳐 보임
-```
+**최종 해결 방향**:
+1. 시뮬 카메라 해상도를 실카메라와 같은 `424x240`으로 고정
+2. 기존 localization DB 백업 후, **같은 해상도 조건으로 맵을 다시 생성**
+3. SLAM 모드 파라미터를 저해상도 조건에 맞게 보수적으로 튜닝
+4. flat indoor 환경 기준으로 `Reg/Force3DoF: true` 적용
+5. 새 DB로 localization 재실행
 
-`Force3DoF`는 z/pitch/roll이 없는 2D 평면 로봇(바퀴형)에 적합한 옵션. 3D로 움직이는 족형 로봇에는 역효과.
-
-**해결**: `Reg/Force3DoF: "false"` (6DoF odom을 신뢰)
+**적용한 파라미터**:
 
 ```python
-# launch/go2_rtabmap.launch.py
-"Reg/Force3DoF": "false",  # 6DoF ground truth odom 사용 시 필수
+# launch/go2_rtabmap.launch.py — SLAM 모드
+"Rtabmap/DetectionRate": "1.0",   # 424x240에서 처리 간격 축소
+"Kp/MaxFeatures": "1000",         # 저해상도 특징점 부족 완화
+"Rtabmap/LoopThr": "0.20",        # 잘못된 loop closure를 더 보수적으로 제한
+"RGBD/ProximityBySpace": "false", # 근접 제약으로 그래프가 꼬이는 현상 완화
+"Reg/Force3DoF": "true",          # flat indoor 맵 생성에서 roll/pitch 영향 억제
 ```
+
+**최종 판단**:
+- 사족보행이라 body motion 자체는 6DoF가 맞다.
+- 하지만 이번 용도는 `flat indoor` 기반의 맵 생성 / localization이므로,
+- 맵 그래프 최적화까지 6DoF로 풀기보다 `x, y, yaw`에 더 가깝게 제한하는 쪽이 오히려 안정적이었다.
+- 특히 이번 증상은 전체 공간의 3D 기복을 반영해야 하는 문제보다, 특정 벽/기둥에서 시각 매칭이 불안정해 그래프가 꼬이는 문제가 더 컸다.
+
+**쉽게 말하면**:
+- `Reg/Force3DoF: false`
+  - RTAB-Map이 Go2 몸의 pitch/roll 흔들림도 전부 "진짜 자세 변화"로 믿고 정합함
+  - 그래서 같은 벽을 봐도 프레임마다 조금 다른 각도로 본 차이를 맵에 반영하려 해 ghost layer가 생길 수 있음
+
+- `Reg/Force3DoF: true`
+  - RTAB-Map이 "이건 평평한 바닥 위 이동"이라고 보고 위아래 기울기는 덜 믿고 평면 기준으로 맞춤
+  - 그래서 Go2 몸 흔들림 영향이 줄어 실내 평면 맵이 더 안정적으로 만들어짐
+
+**왜 IMU/odom가 있어도 완벽히 해결되지 않았나?**:
+- 기대한 동작은 맞다. IMU/odom가 충분히 좋으면 카메라가 기울어져 봐도 RTAB-Map이 그 자세를 알고 같은 벽/기둥으로 정합해야 한다.
+- 하지만 실제 RTAB-Map은 odom/IMU 힌트만 쓰는 것이 아니라, **실제 RGB-D 프레임 자체를 다시 registration**한다.
+- 이때 `424x240` 저해상도, 사선 시야, 얇은 기둥, 벽 edge, depth 노이즈가 겹치면 프레임 관측이 매번 조금씩 다르게 들어온다.
+- 즉 odom는 "몸이 얼마나 기울었는지"를 잘 알려줘도, **관측 자체가 불안정하면 6DoF 정합이 그 차이까지 과하게 맞추려다** 벽/기둥이 퍼지거나 겹쳐 보일 수 있다.
+- 그래서 이번 경우는 "IMU/odom가 없어서"가 아니라, **좋은 odom가 있어도 저해상도 RGB-D 관측을 6DoF로 끝까지 믿는 것이 오히려 불안정했던 케이스**로 해석하는 것이 맞다.
+
+**결과**:
+- 새 DB를 같은 `424x240` 조건으로 다시 만든 뒤 localization 성공
+- `/scan` 주기와 맵 정합이 함께 안정화됨
 
 ### MCP 연결
 | 이슈 | 해결 |

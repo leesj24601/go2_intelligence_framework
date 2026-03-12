@@ -34,8 +34,10 @@ rosdep install --from-paths src --ignore-src -r -y
 - `nav2_simple_commander`
 - `portaudio19-dev`
 - `python3-numpy`
+- `python3-pyqtgraph`
 - `python_qt_binding`
 - `rclpy`
+- `sensor_msgs`
 - `tf2_ros`
 - `ament_index_python`
 
@@ -52,7 +54,7 @@ rosdep install --from-paths src --ignore-src -r -y
 ## Recommended Install Split
 
 - `pip`: `faster-whisper`, `sounddevice`
-- `rosdep` / system: ROS packages, `python3-numpy`, `portaudio19-dev`
+- `rosdep` / system: ROS packages, `python3-numpy`, `python3-pyqtgraph`, `portaudio19-dev`
 - manual: Isaac Sim, Isaac Lab, `go2_description`
 
 ## Local Check on 2026-03-12
@@ -60,6 +62,7 @@ rosdep install --from-paths src --ignore-src -r -y
 ### Installed / Available
 
 - `python3-numpy` `1.21.5-1ubuntu22.04.1`
+- `python3-pyqtgraph` installed manually via `sudo apt install python3-pyqtgraph`
 - `python3-pyqt5` `5.15.6+dfsg-1ubuntu3`
 - `ros-humble-python-qt-binding` `1.1.3-1jammy.20251008.150450`
 - `ros-humble-nav2-bringup` `1.1.20-1jammy.20251228.133403`
@@ -70,7 +73,6 @@ rosdep install --from-paths src --ignore-src -r -y
 
 ### Not Found
 
-- `python3-pyqtgraph`
 - `plotjuggler`
 - `plotjuggler_ros`
 

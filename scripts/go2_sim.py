@@ -78,13 +78,6 @@ from isaacsim.core.utils import extensions
 # ROS2 bridge 확장 활성화
 extensions.enable_extension("isaacsim.ros2.bridge")
 
-# MCP 익스텐션 경로 등록 및 활성화
-import omni.kit.app
-omni.kit.app.get_app().get_extension_manager().add_path(
-    "/home/cvr/omni-mcp/isaac-sim-mcp"
-)
-extensions.enable_extension("isaac.sim.mcp_extension")
-
 simulation_app.update()
 
 
@@ -170,26 +163,61 @@ class CmdVelNode:
 
     def shutdown(self):
         self._node.destroy_node()
-        if self._rclpy.ok():
-            self._rclpy.shutdown()
+
+
+class JointStatePublisherNode:
+    """Isaac Sim articulation 상태를 실제 /joint_states로 퍼블리시."""
+
+    def __init__(self, joint_names: list[str]):
+        import rclpy
+        from rclpy.node import Node
+        from sensor_msgs.msg import JointState
+
+        if not rclpy.ok():
+            rclpy.init()
+
+        self._rclpy = rclpy
+        self._JointState = JointState
+
+        class _Node(Node):
+            def __init__(self):
+                super().__init__("go2_joint_state_publisher")
+                self.pub = self.create_publisher(JointState, "/joint_states", 10)
+
+        self._node = _Node()
+        self._joint_names = list(joint_names)
+        print(f"[INFO] /joint_states publisher 시작 ({len(self._joint_names)} joints)")
+
+    @staticmethod
+    def _to_builtin_time(sim_time_s: float):
+        from builtin_interfaces.msg import Time
+
+        msg = Time()
+        msg.sec = int(sim_time_s)
+        msg.nanosec = int((sim_time_s - msg.sec) * 1_000_000_000)
+        return msg
+
+    def publish(self, sim_time_s: float, joint_pos, joint_vel=None):
+        msg = self._JointState()
+        msg.header.stamp = self._to_builtin_time(sim_time_s)
+        msg.name = self._joint_names
+        msg.position = [float(x) for x in joint_pos]
+        if joint_vel is not None:
+            msg.velocity = [float(x) for x in joint_vel]
+        self._node.pub.publish(msg)
+
+    def shutdown(self):
+        self._node.destroy_node()
 
 
 def setup_ros2_camera_graph(camera_prim_path: str):
-    """숨겨진 뷰포트에서 렌더 프로덕트 생성 → OmniGraph ROS2 퍼블리시.
+    """명시 해상도 render product 생성 → OmniGraph ROS2 퍼블리시.
 
-    공식 예제 방식: execution evaluator + SIMULATION pipeline + frameSkipCount
-    → evaluate_sync 블로킹 없이 시뮬레이션 스텝과 자동 동기화
+    viewport 크기에 의존하지 않고 render product 해상도를 직접 고정한다.
+    실제 RealSense 설정과 맞추기 위해 424x240으로 강제한다.
     """
-    from omni.kit.viewport.utility import create_viewport_window
-
-    # 숨겨진 뷰포트 생성 (메인 뷰포트에 영향 없음) - 320x240 저해상도
-    vp_window = create_viewport_window(
-        "ROS2_Camera", width=320, height=240, visible=False
-    )
-    vp_api = vp_window.viewport_api
-    vp_api.set_active_camera(camera_prim_path)
-    rp_path = vp_api.get_render_product_path()
-    print(f"[INFO] 숨겨진 뷰포트 렌더 프로덕트: {rp_path}")
+    render_width = 424
+    render_height = 240
 
     # frameSkipCount: 퍼블리시Hz = simFPS / (skipCount + 1)
     # 시뮬레이션 ~30fps 기준 → skipCount=2 → ~10Hz 퍼블리시
@@ -205,34 +233,42 @@ def setup_ros2_camera_graph(camera_prim_path: str):
         {
             keys.CREATE_NODES: [
                 ("OnPlaybackTick", "omni.graph.action.OnPlaybackTick"),
+                ("createRenderProduct", "isaacsim.core.nodes.IsaacCreateRenderProduct"),
                 ("cameraHelperRgb", "isaacsim.ros2.bridge.ROS2CameraHelper"),
                 ("cameraHelperDepth", "isaacsim.ros2.bridge.ROS2CameraHelper"),
                 ("cameraHelperInfo", "isaacsim.ros2.bridge.ROS2CameraInfoHelper"),
             ],
             keys.CONNECT: [
-                ("OnPlaybackTick.outputs:tick", "cameraHelperRgb.inputs:execIn"),
-                ("OnPlaybackTick.outputs:tick", "cameraHelperDepth.inputs:execIn"),
-                ("OnPlaybackTick.outputs:tick", "cameraHelperInfo.inputs:execIn"),
+                ("OnPlaybackTick.outputs:tick", "createRenderProduct.inputs:execIn"),
+                ("createRenderProduct.outputs:execOut", "cameraHelperRgb.inputs:execIn"),
+                ("createRenderProduct.outputs:execOut", "cameraHelperDepth.inputs:execIn"),
+                ("createRenderProduct.outputs:execOut", "cameraHelperInfo.inputs:execIn"),
+                ("createRenderProduct.outputs:renderProductPath", "cameraHelperRgb.inputs:renderProductPath"),
+                ("createRenderProduct.outputs:renderProductPath", "cameraHelperDepth.inputs:renderProductPath"),
+                ("createRenderProduct.outputs:renderProductPath", "cameraHelperInfo.inputs:renderProductPath"),
             ],
             keys.SET_VALUES: [
-                ("cameraHelperRgb.inputs:renderProductPath", rp_path),
+                ("createRenderProduct.inputs:cameraPrim", [camera_prim_path]),
+                ("createRenderProduct.inputs:width", render_width),
+                ("createRenderProduct.inputs:height", render_height),
                 ("cameraHelperRgb.inputs:frameId", "camera_optical_frame"),
                 ("cameraHelperRgb.inputs:topicName", "camera/color/image_raw"),
                 ("cameraHelperRgb.inputs:type", "rgb"),
                 ("cameraHelperRgb.inputs:frameSkipCount", FRAME_SKIP),
-                ("cameraHelperDepth.inputs:renderProductPath", rp_path),
                 ("cameraHelperDepth.inputs:frameId", "camera_optical_frame"),
                 ("cameraHelperDepth.inputs:topicName", "camera/depth/image_rect_raw"),
                 ("cameraHelperDepth.inputs:type", "depth"),
                 ("cameraHelperDepth.inputs:frameSkipCount", FRAME_SKIP),
-                ("cameraHelperInfo.inputs:renderProductPath", rp_path),
                 ("cameraHelperInfo.inputs:frameId", "camera_optical_frame"),
                 ("cameraHelperInfo.inputs:topicName", "camera/camera_info"),
                 ("cameraHelperInfo.inputs:frameSkipCount", FRAME_SKIP),
             ],
         },
     )
-    print(f"[INFO] ROS2 카메라 퍼블리셔 설정 완료 (320x240, frameSkip={FRAME_SKIP})")
+    print(
+        f"[INFO] ROS2 카메라 퍼블리셔 설정 완료 "
+        f"({render_width}x{render_height}, frameSkip={FRAME_SKIP})"
+    )
 
     # /clock 퍼블리시 (use_sim_time 지원)
     (clock_graph, _, _, _) = og.Controller.edit(
@@ -411,8 +447,11 @@ def main(env_cfg, agent_cfg):
         )
     )
 
+    robot = env.unwrapped.scene["robot"]
     cmd_vel_node = CmdVelNode()
+    joint_state_pub = JointStatePublisherNode(robot.joint_names)
     _last_log_time = 0.0
+    sim_time_s = 0.0
 
     # 명령 manager 미리 캐싱
     cmd_term = None
@@ -478,18 +517,35 @@ def main(env_cfg, agent_cfg):
         with torch.inference_mode():
             actions = policy(obs)
             obs, _, _, _ = env.step(actions)
+            sim_time_s += dt
             # env.step() 내부에서 SIMULATION pipeline 실행:
             # - IsaacComputeOdometry가 prim에서 직접 pos/quat/vel 읽기
             # - ROS2PublishOdometry + ROS2PublishRawTransformTree 퍼블리시
             # - 카메라 렌더 + 퍼블리시
             # → 모두 같은 tick에서 실행되어 완벽 동기화
 
+        try:
+            joint_state_pub.publish(
+                sim_time_s,
+                robot.data.joint_pos[0].detach().cpu().tolist(),
+                robot.data.joint_vel[0].detach().cpu().tolist(),
+            )
+        except Exception:
+            pass
+
         if args_cli.rt.lower() in ("true", "1", "yes"):
             sleep_time = dt - (time.time() - start_time)
             if sleep_time > 0:
                 time.sleep(sleep_time)
 
+    joint_state_pub.shutdown()
     cmd_vel_node.shutdown()
+    try:
+        import rclpy
+        if rclpy.ok():
+            rclpy.shutdown()
+    except Exception:
+        pass
     env.close()
 
 

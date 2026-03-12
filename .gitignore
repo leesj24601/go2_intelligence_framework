@@ -2,6 +2,14 @@
 __pycache__/
 *.pyc
 
+# colcon build artifacts
+build/
+install/
+log/
+build_merge/
+install_merge/
+log_merge/
+
 # 시뮬레이션 결과물 폴더 무시
 outputs/
 

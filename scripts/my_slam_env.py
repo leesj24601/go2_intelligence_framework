@@ -71,7 +71,7 @@ class MySlamEnvCfg(UnitreeGo2RoughEnvCfg):
             prim_path="{ENV_REGEX_NS}/Robot/base/front_cam",
             update_period=0,  # 센서 데이터 수집 비활성화 (ROS2는 숨겨진 뷰포트 사용)
             height=240,
-            width=320,
+            width=424,
             data_types=[],  # prim만 생성, 센서 렌더링 안 함 (이중 렌더링 방지)
             spawn=sim_utils.PinholeCameraCfg(
                 focal_length=15.0,

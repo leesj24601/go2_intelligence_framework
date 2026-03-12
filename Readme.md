@@ -25,6 +25,7 @@ By providing a pre-configured pipeline of **RTAB-Map** and **Nav2**, it enables 
 - [🎯 Overview](#-overview)
 - [🗺️ Project Roadmap](#️-project-roadmap)
 - [🛠️ Prerequisites](#️-prerequisites)
+- [📦 Go2 URDF Dependency](#go2-urdf-dependency)
 - [⚙️ Installation & Setup](#️-installation--setup)
 - [📂 Project Structure](#-project-structure)
 - [🏗️ Modules](#️-modules)
@@ -55,8 +56,6 @@ This project aims to build a comprehensive intelligence framework for the Unitre
   - [ ] ROS 2 bridge development for physical Unitree Go2 hardware.
   - [ ] Comprehensive Sim2Real transfer guide and real-world validation.
 
----
-
 ## 🛠️ Prerequisites
 Before getting started, ensure your system meets the following requirements:
 
@@ -65,7 +64,23 @@ Before getting started, ensure your system meets the following requirements:
 - **Simulator**: [NVIDIA Isaac Sim 5.1.0](https://developer.nvidia.com/isaac-sim)
 - **Framework**: [NVIDIA Isaac Lab](https://isaac-sim.github.io/IsaacLab/)
 - **Python**: 3.10 or 3.11
-- **Conda Environment**: Recommended (Activate your specific Isaac Sim conda environment, e.g., `lab`)
+- **Conda Environment**: Recommended (See Module Quick Start for activation)
+
+## 📦 Go2 URDF Dependency
+
+RViz visualization in this project requires a `go2_description` package in your ROS workspace.
+
+Recommended references:
+- https://github.com/Unitree-Go2-Robot/go2_description
+- https://github.com/unitreerobotics/unitree_ros
+
+Notes:
+- `go2_description` is the most direct dependency for RViz robot visualization in this project.
+- `unitree_ros` is the ROS1 repository that commonly includes description/Gazebo assets.
+
+Install a compatible `go2_description` package and build it in your ROS workspace before launching RViz features.
+
+---
 
 ## ⚙️ Installation & Setup
 1. **Clone the repository**:
@@ -73,13 +88,32 @@ Before getting started, ensure your system meets the following requirements:
    git clone https://github.com/leesj24601/go2_intelligence_framework.git
    cd go2_intelligence_framework
    ```
-2. **Environment Sourcing**:
-   Make sure to source ROS 2 and your workspace in every new terminal:
+2. **Initialize rosdep if needed**:
+   ```bash
+   sudo rosdep init
+   rosdep update
+   ```
+   Skip this step if `rosdep` is already initialized on your machine.
+3. **Install Python-only dependencies**:
+   ```bash
+   /usr/bin/python3 -m pip install --user -r requirements.txt
+   ```
+4. **Install ROS dependencies with rosdep**:
    ```bash
    source /opt/ros/humble/setup.bash
-   # Activate your own Isaac Sim conda environment (e.g., lab)
-   conda activate <your_env_name> 
+   rosdep install --from-paths src --ignore-src -r -y
    ```
+   This reads both `go2_gui_controller` and `go2_project_dependencies` under `src/`.
+5. **Source your ROS environments in each ROS terminal before running commands**:
+   ```bash
+   source /opt/ros/humble/setup.bash
+   source ~/go2_description_ws/install/setup.bash
+   ```
+
+GUI note:
+
+- `go2_gui_controller` is built in a separate workspace.
+- See [GUI Controller Setup](#-gui-controller-setup) below before running the GUI.
 
 ---
 
@@ -151,11 +185,12 @@ Before running SLAM or Navigation, you can explore your mapped environment by ma
   <p><i>Click the image to watch the manual control demonstration in action.</i></p>
 </div>
 
-#### 💻 Quick Start
+#### 🚀 How to Run
 To run the basic simulation and control the robot with your keyboard:
 
 ```bash
-cd ~/Desktop/sj/go2_intelligence_framework
+cd ~/go2_intelligence_framework
+conda activate <isaacsim_env_name>
 python scripts/go2_sim.py
 ```
 
@@ -179,30 +214,31 @@ Demonstrates 3D environmental mapping using RTAB-Map with the Go2 robot within t
 > - **Saving Your Map**: Once you have created a satisfactory map, rename `maps/rtabmap.db` to **`maps/rtabmap_ground_truth.db`**.
 > - **Auto-Load**: The **Localization Mode** is pre-configured to automatically load `maps/rtabmap_ground_truth.db` for stable positioning.
 
-#### 💻 Quick Start
+#### 🚀 How to Run
 To run the full simulation and SLAM pipeline, please open three separate terminals.
 
 **Terminal A**: Start the Go2 simulation environment
 ```bash
-cd ~/Desktop/sj/go2_intelligence_framework
+cd ~/go2_intelligence_framework
+conda activate <isaacsim_env_name>
 python scripts/go2_sim.py
 ```
 
 **Terminal B**: Launch the RTAB-Map node
 - **Mapping Mode** (for creating a new map):
 ```bash
-cd ~/Desktop/sj/go2_intelligence_framework
+cd ~/go2_intelligence_framework
 ros2 launch launch/go2_rtabmap.launch.py
 ```
 - **Localization Mode** (Use this mode to estimate current position based on an existing map without creating a new one):
 ```bash
-cd ~/Desktop/sj/go2_intelligence_framework
+cd ~/go2_intelligence_framework
 ros2 launch launch/go2_rtabmap.launch.py localization:=true
 ```
 
 **Terminal C**: Open RViz Visualization
 ```bash
-cd ~/Desktop/sj/go2_intelligence_framework
+cd ~/go2_intelligence_framework
 rviz2 -d config/go2_sim.rviz
 ```
 
@@ -233,29 +269,63 @@ Integration with ROS 2 Nav2 stack for autonomous waypoint navigation and obstacl
 
 > 🗺️ **Map Dependency**: The Nav2 module is pre-configured to automatically load the map from **`maps/rtabmap_ground_truth.db`**. Please ensure you have completed the mapping process and renamed your database file as described in the SLAM section before running navigation.
 
-#### 💻 Quick Start
-To run the Nav2 autonomous navigation, follow these steps in separate terminals.
+#### 🎮 Interactive Control (GUI & Natural Language)
+In addition to RViz's `2D Goal Pose`, you can use the **GUI Controller** for more intuitive robot management and mission planning.
+*   **Intuitive Teleoperation**: Direct control via GUI buttons.
+*   **Mission Planning**: Set waypoints and monitor robot status in real-time.
+*   **Future Update**: Support for **Natural Language Commands** (e.g., "Go to the kitchen") to automatically set corresponding waypoints via the GUI bridge.
+
+#### 🛠️ GUI Controller Setup
+Before running the interactive controller for the first time, you need to set up and build the GUI package in a separate workspace:
+
+1. **Create an external workspace and link the package**:
+   ```bash
+   # Navigate to your home directory
+   cd ~
+   mkdir -p go2_gui_controller_ws/src
+   # Link the GUI package from this repository to the new workspace
+   ln -s ~/go2_intelligence_framework/src/go2_gui_controller ~/go2_gui_controller_ws/src/
+   ```
+
+2. **Build the package**:
+   ```bash
+   cd ~/go2_gui_controller_ws
+   source /opt/ros/humble/setup.bash
+   colcon build --packages-select go2_gui_controller
+   ```
+   > 💡 **Tip**: You only need to run the build command once. If there are no code changes, you can skip this step in future sessions.
+
+#### 🚀 How to Run
+To run the Nav2 autonomous navigation and the interactive controller, follow these steps in separate terminals.
 
 **Terminal A**: Start the Go2 simulation environment
 ```bash
-cd ~/Desktop/sj/go2_intelligence_framework
+cd ~/go2_intelligence_framework
+conda activate <isaacsim_env_name>
 python scripts/go2_sim.py
 ```
 
 **Terminal B**: Launch the Nav2 stack
 ```bash
-cd ~/Desktop/sj/go2_intelligence_framework
+cd ~/go2_intelligence_framework
 ros2 launch launch/go2_navigation.launch.py
 ```
 
 **Terminal C**: Open RViz Visualization
 ```bash
-cd ~/Desktop/sj/go2_intelligence_framework
+cd ~/go2_intelligence_framework
 rviz2 -d config/go2_sim.rviz
 ```
+
+**Terminal D**: Launch GUI Controller
+```bash
+cd ~/go2_intelligence_framework
+bash scripts/run_gui_controller.sh
+```
+
 > 💡 **Tip for Successful Navigation**:
 > 1. **Confirm Localization First**: Successful localization is confirmed when the **red laser scan lines** perfectly align with the generated map in RViz.
-> 2. **Issue Goal**: Issue the `2D Goal Pose` from RViz **only after** this localization alignment is confirmed.
+> 2. **Issue Goal**: Use the `2D Goal Pose` in RViz or the **GUI Controller's navigation interface** only after localization is stable.
 ---
 
 ### 4. Reinforcement Learning

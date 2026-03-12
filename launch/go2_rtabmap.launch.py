@@ -1,8 +1,10 @@
 from launch import LaunchDescription
 from launch.actions import DeclareLaunchArgument
-from launch.substitutions import LaunchConfiguration
 from launch.conditions import IfCondition, UnlessCondition
+from launch.substitutions import Command, FindExecutable, LaunchConfiguration, PathJoinSubstitution
 from launch_ros.actions import Node
+from launch_ros.descriptions import ParameterValue
+from launch_ros.substitutions import FindPackageShare
 
 
 def generate_launch_description():
@@ -10,7 +12,25 @@ def generate_launch_description():
     use_sim_time = LaunchConfiguration("use_sim_time")
     localization = LaunchConfiguration("localization")
     slam_db = LaunchConfiguration("slam_db")
-    localization_db = LaunchConfiguration("localization_db")   
+    localization_db = LaunchConfiguration("localization_db")
+    description_package = LaunchConfiguration("description_package")
+    description_file = LaunchConfiguration("description_file")
+    prefix = LaunchConfiguration("prefix")
+    use_fake_joint_states = LaunchConfiguration("use_fake_joint_states")
+
+    # ROS 쪽에서 가장 흔한 패턴인 xacro -> robot_state_publisher 흐름을 사용한다.
+    # camera_link 체인은 기존 static TF를 유지하므로 본체/다리 모델만 URDF에서 가져온다.
+    robot_description_content = Command(
+        [
+            PathJoinSubstitution([FindExecutable(name="xacro")]),
+            " ",
+            PathJoinSubstitution([FindPackageShare(description_package), "urdf", description_file]),
+            " ",
+            "prefix:=",
+            prefix,
+        ]
+    )
+    robot_description = ParameterValue(robot_description_content, value_type=str)
 
     # 실제 카메라 토픽과 일치 시키기 위해 리매핑 
     camera_remappings = [
@@ -42,6 +62,35 @@ def generate_launch_description():
             "-1.5708", "0", "-1.5708",
             "camera_link",
             "camera_optical_frame",
+        ],
+    )
+
+    robot_state_publisher = Node(
+        package="robot_state_publisher",
+        executable="robot_state_publisher",
+        output="screen",
+        parameters=[
+            {
+                "robot_description": robot_description,
+                "use_sim_time": use_sim_time,
+                "publish_frequency": 100.0,
+                "frame_prefix": "",
+            }
+        ],
+    )
+
+    # joint_state_publisher는 /robot_description 토픽을 구독해 기본 자세 joint_states를 발행한다.
+    # 이 방식이 standalone 검증에서 실제로 동작했고, ROS 커뮤니티에서도 흔히 쓰는 패턴이다.
+    joint_state_publisher = Node(
+        package="joint_state_publisher",
+        executable="joint_state_publisher",
+        output="screen",
+        condition=IfCondition(use_fake_joint_states),
+        parameters=[
+            {
+                "use_sim_time": use_sim_time,
+                "rate": 30.0,
+            }
         ],
     )
 
@@ -162,6 +211,26 @@ def generate_launch_description():
                 description="Use simulation clock from /clock topic",
             ),
             DeclareLaunchArgument(
+                "description_package",
+                default_value="go2_description",
+                description="Package that provides the Go2 URDF/Xacro files",
+            ),
+            DeclareLaunchArgument(
+                "description_file",
+                default_value="go2_description.urdf",
+                description="URDF/Xacro file used for RViz RobotModel",
+            ),
+            DeclareLaunchArgument(
+                "prefix",
+                default_value="",
+                description="Optional TF/joint prefix for robot description",
+            ),
+            DeclareLaunchArgument(
+                "use_fake_joint_states",
+                default_value="false",
+                description="Use joint_state_publisher for a fixed pose when no real /joint_states source exists",
+            ),
+            DeclareLaunchArgument(
                 "localization",
                 default_value="false",
                 description="Launch in localization mode",
@@ -176,6 +245,8 @@ def generate_launch_description():
                 default_value="/home/cvr/Desktop/sj/go2_intelligence_framework/maps/rtabmap_ground_truth.db",
                 description="DB path for localization mode (read-only, not overwritten)",
             ),
+            robot_state_publisher,
+            joint_state_publisher,
             base_to_camera_tf,
             camera_to_optical_tf,
             depthimage_to_laserscan,

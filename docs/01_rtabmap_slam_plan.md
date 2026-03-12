@@ -543,6 +543,24 @@ rviz2 -d config/go2_sim.rviz
 - [x] 2D OccupancyGrid 맵
 - [x] Odometry / TF tree 시각화
 
+#### OccupancyGrid가 카메라 z축 위치에 떠 보이는 이유
+
+`OccupancyGrid`는 3D 맵을 2D로 요약한 결과가 맞지만, RViz에서는 "실제 바닥 높이"에 자동으로 붙지 않는다.
+
+- RTAB-Map 3D 포인트클라우드는 각 포인트의 실제 `z` 값을 유지한다.
+- 반면 2D `OccupancyGrid`(`/map`)는 RViz에서 항상 해당 프레임의 기준 평면, 즉 `map` 프레임의 `z=0`에 렌더링된다.
+- 따라서 3D 점군을 바탕으로 계산된 2D 맵이라도, 표시 위치는 "바닥 높이"가 아니라 "map 원점 높이"를 따른다.
+
+현재 구성에서는 `map` 프레임의 `z=0`이 발바닥 높이가 아니라 카메라/몸통 높이 쪽에 가깝게 잡혀 있어, 초록색 OccupancyGrid 평면이 Go2 위쪽에 떠 있는 것처럼 보인다.
+
+즉:
+
+- 하얀 점군: 실제 3D point cloud
+- 초록 평면: `map` 프레임의 `z=0`에 그려진 2D OccupancyGrid
+- 회색 격자: RViz 기본 Grid
+
+결론적으로 이것은 "맵 계산 오류"가 아니라 "2D map 표시 기준 평면과 실제 바닥 높이가 다름"에서 오는 시각화 차이이다.
+
 ---
 
 ## 트러블슈팅
